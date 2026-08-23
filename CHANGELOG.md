@@ -2,6 +2,14 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.6.3] - 2026-08-23
+
+### 新增：设置页 Genos API key 输入框
+
+- **Host**：`GET /config` 返回 `genosKey`/`genosKeySet`；`POST /config` 接受 `genosKey` 写入 `apiKeys.genos/genos_vep/genos_mutation`。
+- **Client**：设置页新增 `type=password` 的 Genos API key 输入框，已配置时显示 `••••••••`，声明 Genos 是预测模型非对话 LLM。
+- 描述修正："Genpilot 对话 LLM 系统自动鉴权；Genos 预测模型需填写下方 API key"。
+
 ## [2.6.2] - 2026-08-23
 
 ### 修正：彻底区分 Genos 预测模型 与 Genpilot 对话 LLM
