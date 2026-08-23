@@ -2,6 +2,13 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.8.1] - 2026-08-23
+
+### 紧急修复：SSE 连接关闭时 ctx.off 崩溃导致 dsh 进程退出
+
+- 根因：`req.on('close')` 回调中调用 `disposeListener()` → `ctx.off('session/event')`，在插件重载/进程关闭时 Cordis 上下文可能已销毁，抛 `cannot get property "off" without inject` → 未捕获异常 → 整个 node 进程崩溃。
+- 修复：`try/catch` 包住 `disposeListener()`，listener 随进程消亡自然回收。
+
 ## [2.8.0] - 2026-08-23
 
 ### 重大升级：会话地图实时推送 + Synapse 式事件驱动架构
