@@ -2,6 +2,29 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.8.0] - 2026-08-23
+
+### 重大升级：会话地图实时推送 + Synapse 式事件驱动架构
+
+借鉴 [dsh-synapse](https://github.com/liangmianya/dsh-synapse) 的核心设计，将会话地图从轮询升级为事件驱动实时推送。
+
+**Host 新增 SSE 端点**
+- `GET /api/dcs-cloud/v2/session-events/stream?sessionId=`：Server-Sent Events 长连接，替代轮询。
+- 连接建立时回放当前会话的已有事件，之后通过 `ctx.on('session/event')` 实时推送每个新事件。
+- `session/created` 事件触发时分叉关系自动广播（`event: forks`）。
+- 事件投影逻辑与 `/v2/session-events` 完全一致（`user`/`assistant`/`tool` 归一化）。
+
+**Client 替换轮询为 SSE**
+- 移除 10s 轮询 + `nextSeq` 增量逻辑（消除死循环 bug 的根源）。
+- 使用 `EventSource` 连接 SSE 端点，事件实时追加到本地状态。
+- 连接状态指示器（🟢 实时 / 🔴 断线），断线可手动重连。
+- 工具调用结果通过 `resultOnly` 标志自动补全到对应 callId 卡片。
+
+**保留功能**
+- 对话轮次卡片（用户消息 / 助手回复 / 工具调用折叠）
+- 分支关系展示 + 复制会话 ID
+- 分析角度建议
+
 ## [2.7.1] - 2026-08-23
 
 ### 修复：会话地图丢失进行中对话
