@@ -2,6 +2,30 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.6.1] - 2026-08-23
+
+### 变更：技能 API key 配置管理 + Genos / Genos‑VEP 集成
+
+- **API key 统一管理**：在 DCS 配置（`~/.dsh/dcs-cloud.json`）新增 `apiKeys` 字段。`dcs-client.js` DEFAULT_CFG 加入 `apiKeys: {}`。
+- **`dcs_configure` 增强**：接受 `api_keys` 参数（JSON 对象），可批量设置技能 API key（如 `{"genos_vep":"sk-..."}`）。
+- **新增工具 `dcs_api_key`**：支持 set / get / list / delete 操作，管理技能 API key。key 持久化于 `dcs-cloud.json`（600 权限）。
+- **`atlas.js` 新增 `API_KEY_SKILLS`**：记录已知需 key 的技能（genos_vep / genos_mutation / genos），每个含 envVar、label、desc、apiUrl、关联 skill 路径。
+- **自动注入**：`getApiKey(name)` / `skillEnvVars(name)` 辅助函数从配置读取 key；调用 Genos‑VEP 等技能时自动注入 `HG38_VCF_PREDICT_API_KEY`。
+- **systemPrompt 更新**：step 0.5 增加「技能 API key 管理」说明，首次使用前提示用户从 DCS Cloud 申请。
+- 实测 Genos‑VEP 完整预测（NIPBL 基因 × HG00128.vcf.gz，7 窗口，产出 448 条 logFC 记录 + 231 张三轨图），API key 验证通过。
+
+## [2.6.0] - 2026-08-23
+
+### 变更：默认引擎 = DCS Genpilot + 原生 skill / 专家支持 + 一次使用=一个 Genpilot 项目
+
+- **默认引擎 = DCS Genpilot**（systemPrompt 强化）：明确「你（dsh）是使用科学家导师，只做方案设计与结果把关；一切分析计算默认交由 DCS Genpilot 智能交互执行（在线容器 / 离线并行 / Genpilot LLM），不自上而下手写整套分析代码」。
+- **一次使用 = 一个 Genpilot 项目**：新增 `dcs_project_create` 工具，在 genpilot 创建真实项目（`dcs project create`，`billing_group` 缺省自动取 `dcs billing ls` 的第一个授权计费组），返回项目 code；systemPrompt 立项步骤改为「先 dcs_project_create → 再 dcs_project_update 登记」。
+- **DCS 原生 skill 读取**：新增 `dcs_skills_list`（按 category/keyword/native 检索 /public/skills 技能库，读取 skills_snapshot.json 973 条）与 `dcs_skill_read`（读 SKILL.md / README.md / AGENTS.md）。
+- **专家（专家库）读取**：新增 `dcs_experts_list`（列出 /public/skills/experts 的专家：scrna-seq-expert / stereo-seq-expert / wgs-wes-germline-expert / cima-expert / hcc-multiomics-pathology-expert）与 `dcs_expert_read`（读取 AGENTS.md + SOUL.md + 子技能清单）。
+- **atlas 扩充**：`dcs_atlas` 新增 `skills` section（原生技能库 / 专家库一览）；`atlas.js` 新增 `SKILLS_BASE / SKILLS_SNAPSHOT / EXPERT_BASE / SKILL_TOP_DIRS / EXPERTS / skillsHints`。
+- **systemPrompt 优化**：立项后增加「0.5 优先复用 DCS 原生 skill / 专家」步骤（先 dcs_skills_list → dcs_skill_read；需要方向专家用 dcs_experts_list → dcs_expert_read），把专家思路/模板融入方案与产出。
+- 说明：skill / 专家读取均经在线容器（`terminal exec`）访问 `/public/skills`，无需额外鉴权；`dcs_project_create` 会真实创建 DCS 项目并从计费组扣费，应由用户确认后再调用。
+
 ## [2.5.3] - 2026-08-22
 
 ### 变更：数据提交改为「任务互动中主动询问」，移除静态表单

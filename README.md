@@ -10,6 +10,8 @@ v2.0 曾把 DCS 研究工作台做成独立 profile（`dcs-harness`）单独开�
 
 **核心原则**：你（dsh）是「使用科学家」导师，负责分解科学问题、制定方案、指导与监督；具体计算由 **DCS Genpilot 智能交互**执行。用户输入问题后**先规划、再执行，绝不直接开跑**。
 
+**v2.6 · Genpilot 默认 + 原生 skill/专家**：新增「**默认引擎 = DCS Genpilot**」与「**一次使用 = 一个 Genpilot 项目**」两条默认规则（每次用 `dcs_project_create` 立项，项目 code 登记到「项目管理」窗口）；并支持读取 **DCS 原生技能库**（`/public/skills`，973 条：dcs-skills / builtin_skills / OmicsClaw / LabClaw / bioSkills / claude-scientific-skills / ClawBio）与 **专家库**（`/public/skills/experts`：单细胞/空间/WGS-WES/CIMA/HCC 病理等），发起分析前先用 `dcs_skills_list` / `dcs_skill_read` / `dcs_experts_list` / `dcs_expert_read` 发现并复用。
+
 **两个核心窗口**（`conversation.view` tab 环，随每个对话更新，`对话`原样保留）：
 
 | 窗口 | 内容 |
@@ -35,6 +37,8 @@ bash scripts/install-harness-profile.sh
 
 ```
 用户提问
+  → ⓪ 立项（Genpilot 项目）：dcs_project_create 创建本项目（自动取第一个授权计费组），project_code 登记到 dcs_project_update
+  → ⓪.5 复用 DCS 原生 skill / 专家：dcs_skills_list → dcs_skill_read；需要某方向专家用 dcs_experts_list → dcs_expert_read
   → ① 数据确认（第一步）：用 ask_user_question 主动询问用户是否提供自有数据（本地路径/容器/链接，不限类型，附用途描述），customData.items 登记；无则说明优先用 DCS 公共库 /public
   → ② 学术检索：web_search/子代理查文献背景；dcs_atlas/dcs_container_ls/dcs_public_search 摸清可用数据资源与可复用流程
   → ③ 给出分析计划：dcs_plan_update（科学问题→数据→方法步骤→预期产出），planStatus=awaiting_review
@@ -49,7 +53,13 @@ bash scripts/install-harness-profile.sh
 
 | 工具 | 作用 |
 | --- | --- |
-| `dcs_atlas` | 查看「数据库全图谱」：11 片区公共库 + 官方组学工具库（8 大类）+ 关键词映射 + 容器公共数据集 |
+| `dcs_atlas` | 查看「数据库全图谱」：11 片区公共库 + 官方组学工具库（8 大类）+ 关键词映射 + 容器公共数据集 + DCS 原生技能/专家库 |
+| `dcs_skills_list` | 列出/检索 DCS Genpilot「原生技能库」（`/public/skills`，dcs-skills / builtin_skills / OmicsClaw / LabClaw / bioSkills / claude-scientific-skills / ClawBio，973 条），支持按类别/关键词/仅原生过滤 |
+| `dcs_skill_read` | 读取某个 DCS 原生技能的完整 `SKILL.md`（必要时 `README.md` / `AGENTS.md`） |
+| `dcs_experts_list` | 列出 DCS「专家库」（`/public/skills/experts`：单细胞/空间/WGS-WES/CIMA/HCC 病理等） |
+| `dcs_expert_read` | 读取某位 DCS 专家的完整定义（`AGENTS.md` + `SOUL.md`）与其绑定子技能 |
+| `dcs_api_key` | 管理 DCS 技能/模型 API key（set/get/list/delete），持久化于 `~/.dsh/dcs-cloud.json`（600 权限）。支持 Genos‑VEP / Genos‑Mutation，调用技能时自动注入 key |
+| `dcs_project_create` | 在 DCS Genpilot 平台创建真实项目（`dcs project create`，自动取第一个授权计费组；**一次使用=一个项目**），返回项目 code 供 `dcs_project_update` 登记 |
 | `dcs_public_search` | 搜索 DCS 公共库元数据（容器 `/public` 之外的补充，走 REST API） |
 | `dcs_container_ls` | 列在线容器目录（**第一优先级**：`/public` 公共库挂载、`/work` 已有分析） |
 | `dcs_data_inspect` | 快速查看 h5ad/csv 结构（细胞类型 annotation / 脑区 / 基因，不加载矩阵） |
