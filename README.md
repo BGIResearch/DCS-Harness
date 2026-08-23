@@ -10,7 +10,7 @@ v2.0 曾把 DCS 研究工作台做成独立 profile（`dcs-harness`）单独开�
 
 **核心原则**：你（dsh）是「使用科学家」导师，负责分解科学问题、制定方案、指导与监督；具体计算由 **DCS Genpilot 智能交互**执行。用户输入问题后**先规划、再执行，绝不直接开跑**。
 
-**v2.6 · Genpilot 默认 + 原生 skill/专家**：新增「**默认引擎 = DCS Genpilot**」与「**一次使用 = 一个 Genpilot 项目**」两条默认规则（每次用 `dcs_project_create` 立项，项目 code 登记到「项目管理」窗口）；并支持读取 **DCS 原生技能库**（`/public/skills`，973 条：dcs-skills / builtin_skills / OmicsClaw / LabClaw / bioSkills / claude-scientific-skills / ClawBio）与 **专家库**（`/public/skills/experts`：单细胞/空间/WGS-WES/CIMA/HCC 病理等），发起分析前先用 `dcs_skills_list` / `dcs_skill_read` / `dcs_experts_list` / `dcs_expert_read` 发现并复用。
+**v2.6.2 · Genpilot 默认 + 原生 skill/专家 + Genos 预测模型区分**：新增「**默认引擎 = DCS Genpilot**」与「**一次使用 = 一个 Genpilot 项目**」两条默认规则（每次用 `dcs_project_create` 立项，项目 code 登记到「项目管理」窗口）；并支持读取 **DCS 原生技能库**（`/public/skills`，973 条）与 **专家库**（`/public/skills/experts`）；**Genos 预测模型**（VCF→RNA 信号，1.2B）与 **Genpilot 对话 LLM**（deepseek-v4-pro 等）在插件中彻底区分，避免混淆。
 
 **两个核心窗口**（`conversation.view` tab 环，随每个对话更新，`对话`原样保留）：
 
@@ -74,7 +74,7 @@ bash scripts/install-harness-profile.sh
 | `dcs_workflow_run` | 投递 WDL 工作流任务 |
 | `dcs_task_status` | 跟踪离线任务与 WDL 任务状态 / 日志 |
 | `dcs_task_update` / `dcs_step_status` | 把「分析计划 + 数据源 + 步骤依赖关系 + 进展」写入「DCS 任务」面板（浏览器 tab） |
-| `dcs_llm` | 调用 DCS 托管 Genpilot LLM（deepseek-v4-pro）做解读 / 文献综合 / 写作 |
+| `dcs_llm` | 调用 DCS Genpilot LLM（对话模型，deepseek-v4-pro 等，系统自动鉴权）做解读 / 文献综合 / 写作。注意：与 Genos 预测模型（VCF→RNA 信号）不同 |
 | `dcs_plan` | 生成 Genpilot 风格 Plan.md（步骤进度表 + 产物路径 + 方法学 + 总结） |
 | `dcs_audit_script` | 执行前静态审计脚本（危险命令 / 硬编码密钥 / 注入 / 资源镜像配置） |
 | `dcs_generate_report` | 把结果、图表、方法按学术逻辑整理成自包含 HTML 网页 |
@@ -139,7 +139,7 @@ dsh plugin --profile web add /path/to/DCS-Harness
 
 - PAT 仅运行时使用：交给 `dcs` 自身**加密存储**在 `~/.dcs/config.yaml`；同时为直连公共库检索 API 而缓存于 `~/.dsh/dcs-cloud.json`（本机私有文件，写入时设为 `0600` 权限，不通过任何接口外发）。
 - 插件本地配置（二进制路径、自动下载开关）存于 `~/.dsh/dcs-cloud.json`。
-- **Genpilot LLM 与 Genos 模型为 DCS 系统自带**：自动鉴权、模型自动选择，无需额外填写 API key；唯一需要的是 `dcs_pat_...`（仅用于 dcs CLI 登录）。
+- **Genpilot LLM 与 Genos 模型为 DCS 系统自带**：Genpilot 对话 LLM（deepseek-v4-pro 等）由系统自动鉴权；Genos 预测模型（VCF→RNA 信号，1.2B）需用户 API key（通过 `dcs_api_key` 配置，key 从 DCS Cloud「个人资料→API_key 管理」申请）。dcs 登录仅需 `dcs_pat_...`（PAT）。
 - `dcs_data_rm`、`dcs_task_cancel/rm` 等破坏性命令**不会**由高层工具直接触发；如需使用请走 `dcs_cli` 透传，并确认后果。
 - 执行前请用 `dcs_audit_script` 审计脚本。
 

@@ -2,6 +2,21 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.6.2] - 2026-08-23
+
+### 修正：彻底区分 Genos 预测模型 与 Genpilot 对话 LLM
+
+此前插件多处将 Genos（VCF→RNA 信号预测，1.2B）与 Genpilot LLM（对话/写作，deepseek-v4-pro）混为一谈，导致误解（如"Genos 无需 API key"——实际上 Genos 预测模型需要用户 API key）。
+
+- **`atlas.js`**：修正 `GENPILOT_PATTERN.note`（区分 Genpilot 对话 LLM 自动鉴权 vs Genos 预测需用户 key）、`genpilotHints()`（`dcs_llm` 描述加上 Genos 区分）、`.env` 说明（区分 chat 与预测的鉴权方式）。
+- **`index.js`**：
+  - `dcs_configure` 描述：不再说 "Genos 无需 API key"，改为 "Genpilot 对话 LLM 系统自动鉴权；Genos 预测模型需用户 API key"。
+  - `dcs_llm` 描述：加上 "注意：Genpilot chat 是对话模型，与 Genos 预测模型不同"。
+  - systemPrompt header：新增强 `⚠️ 模型区分` 提示。
+  - systemPrompt step 7：明确 `dcs_llm` 调的是 Genpilot 对话 LLM，Genos 预测需单独调用 skill。
+  - `dcs_configure` render 输出：加上 "Genos 预测模型需 key，Genpilot 对话 LLM 系统自动鉴权"。
+- **`README.md`**：能力一览表 `dcs_llm` 行加上 Genos 区分；底栏 "Genpilot LLM 与 Genos 模型" 说明改为区分两种模型。
+
 ## [2.6.1] - 2026-08-23
 
 ### 变更：技能 API key 配置管理 + Genos / Genos‑VEP 集成
