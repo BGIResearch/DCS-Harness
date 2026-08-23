@@ -2,6 +2,25 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.7.0] - 2026-08-23
+
+### 新增：原生工作流画布（项目管理面板重构）
+
+- **项目管理面板重构**：保留 Genpilot 模型选择、节点（片区）选择与资源规格显示；原模块折叠列表 / 里程碑 / 自有数据 / 分片进度区块替换为 **原生 SVG 工作流画布**。
+- **WorkflowCanvas**：模块 = 节点（按 `plan.stepIds` 拓扑排序，网格布局），状态色条 + 圆点（pending 灰 / running 蓝 / done 绿 / failed 红 / blocked 黄），连线带箭头；滚轮缩放（原生 `wheel` 监听，`passive:false`）、拖拽平移（位移按 scale 归一）、点击节点查看模块详情（运行历史 + 费用 + 分析计划）。配色用 `currentColor` + 半透明底，深浅主题均可读。
+
+### 新增：会话地图（Synapse 式能力）
+
+- **新窗口「会话地图」**（`conversation.view`，order 55，位于项目管理与结果交付之间）：把当前会话的已提交事件投影为对话轮次卡片——真人消息开新轮次，工具调用按 `callId` 折叠 call+result，插件注入上下文计数显示；展开可见工具参数与结果预览、助手回复、失败标记（❌）与中断标记。
+- **分支关系**：展示当前会话的 fork 谱系（父会话 / 子分支 / 同源分支，活跃或已归档），可复制会话 ID 在侧栏打开；空态提示"fork 当前会话即可创建新分析分支"。
+- **分析角度建议**：基于会话结构生成具体提示（失败调用定位重试、分支对比合并、发现固化到结果交付）。
+
+### Host 新增 API
+
+- `GET /api/dcs-cloud/v2/session-events?sessionId=&fromSeq=`：经 `sessionPersistence.readFrom` 按真实 DSH 事件类型（`user/message` / `assistant/message` / `tool/call` / `tool/result` / `session/title`）归一化投影；服务端按 `callId` 折叠工具调用，文本 400 字符、结果 800 字符截断；支持 `fromSeq` 增量拉取（返回 `nextSeq` 水位）。
+- `GET /api/dcs-cloud/v2/session-forks?sessionId=`：合并内存活跃会话（`sessions.list()`，标题经 `sessionTitle.get` 折叠）与持久化历史（`sessionPersistence.list()`），按 `header.parentSession` 建谱系，返回本会话相关分支（自身/子/兄弟），按创建时间排序。
+- `inject` 新增 `sessionPersistence` 硬依赖；`sessionTitle` 为可选服务（`ctx.get`）。
+
 ## [2.6.3] - 2026-08-23
 
 ### 新增：设置页 Genos API key 输入框
