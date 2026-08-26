@@ -60,7 +60,14 @@
 `analysis run -p <批量文件>`（每行一条命令 → 并行多条任务）
 `analysis ls [-i/-n/-u/-a --page --page-size]` / `info <task-id>` / `log <task-id>` / `start` / `cancel` / `rm` / `consume`
 
-- 资源：`-l vf=32g,num_proc=8[,gpu=L4]`；镜像必填。
+- 资源：`-l` 只认 `vf=<内存>g,num_proc=<核数>[,gpu=L4]`；`"4c 16g"` 这类自然语言**不会**被 CLI 转换（报「-l 参数缺少 num_proc 或 vf」），仅插件层做了自动转换。
+- 镜像必填，且必须是**公共库注册路径** `public-library/<镜像名>:latest`；`ubuntu:24.04` 这类 Docker Hub 短名会报 `image_url不存在`。合法镜像可经公共库检索（resType=img）确认。
+- 离线容器环境与在线容器不同：工作目录是 `/data/work`（不是 `/work/{username}`）；`/Files`、`share-data` 为只读挂载。
+- `-o/--output` 指定结果输出到「数据管理」的路径（以 `/Files` 开头），缺省输出到 `/Files/ResultData/Notebook/<TaskID>/`。
+- `-m/--mount` 挂载 `/Files/...` 数据；**容器内访问挂载文件需补全 `/data/input/` 前缀**。
+- `-i` 命令里若含 `-t`/`-c` 等会被 CLI 当全局 flag 解析（unknown shorthand flag）；复杂命令先写成脚本文件再 `bash <脚本>`。
+- 失败排查：错误为「99999 系统内部错误」时用 `dcs --debug` 重跑可看到底层 `api_msg`；信封里的 `request_id` 可用 `history get <request_id>` 反查（插件失败时会自动做这两步）。
+- 任务归属：DCS 项目间数据不共享，跨项目数据先 `data copy --target-project <项目>`；任务应投递到数据所在项目。
 
 ### workflow（WDL 工作流，复用 Genpilot 现有方案）
 `workflow ls [-n 名 -p 公共库 -t 标签 -u 人 -a --page --page-size]`

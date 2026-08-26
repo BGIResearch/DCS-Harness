@@ -2,6 +2,29 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 离线任务投递鲁棒性：错误透传 + 失败诊断 + 描述修正
+
+复盘离线投递的多轮试错（99999 黑盒、镜像无效、资源格式被拒、/data/work 权限），做以下改进：
+
+**错误透传（`runDcs`）**
+- 失败响应压平时补充 `hint`（`；提示：…`）、`retryable`（`（可重试）`）、信封级 `request_id`（`[request_id: …]`，可用 `dcs history get` 反查）与 `metadata`。
+- 笼统错误（99999 系统内部错误 / 81201 等）自动附上 stderr 末尾，尽量带出底层 `api_msg`，不再纯黑盒。
+
+**离线投递失败诊断（`dcs_offline_run` / `dcs_parallel_run`）**
+- 失败时自动带 `--debug` 重跑同一命令（仅诊断），从输出中抓取底层 `api_msg` 拼入错误。
+- 已知错误模式给出可操作的「下一步」提示：`image_url不存在` → 用云平台镜像库 url 路径（如 `public-library/<镜像名>:latest`）并经 `dcs_public_search`（resType=img）确认；资源格式错 → 必须 `vf=<内存>g,num_proc=<核数>`；permission denied / 只读 → 离线容器工作目录是 `/data/work`；unknown shorthand flag → 复杂命令写成脚本文件再 `bash` 执行。
+- `dcs_parallel_run` 对同一批分片只做一次 `--debug` 诊断，避免重复开销。
+
+**资源格式本地校验**
+- 新增 `checkDcsResource`：归一化后不满足 `vf=…g,num_proc=…[,gpu=…]` 时直接拒绝投递并给出格式说明，不再把非法格式交给 CLI 报错。
+
+**描述与引导修正**
+- `dcs_offline_run` / `dcs_parallel_run` 的 `image` 描述改为云平台镜像库 url 路径约定（如 `public-library/<镜像名>:latest`），去掉 `ubuntu:24.04-python3.12` 裸用推荐；`command`/`command_template` 描述补充 `/data/work` 工作目录、只读挂载、挂载文件容器内 `/data/input/` 前缀与脚本文件建议（依据官方帮助中心 CLI 手册核实；output 目录同步机制因平台侧问题暂不在插件层给指引）。
+- `dcs_atlas` Genpilot 范式（`GENPILOT_PATTERN.offlineNote`）与 systemPrompt 第 5 条新增离线容器法则（/data/work、只读挂载、output 结果目录、镜像约定、flag 规避）与任务归属提示（任务归数据所在项目；跨项目数据先 `dcs data copy --target-project`）。
+- `docs/dcs-cli-reference.md` analysis 章节、`docs/dcs-database-atlas.md` 标准配置同步上述注意事项。
+
 ## [2.8.1] - 2026-08-23
 
 ### 紧急修复：SSE 连接关闭时 ctx.off 崩溃导致 dsh 进程退出
