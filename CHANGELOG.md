@@ -2,6 +2,16 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.10.1] - 2026-08-28
+
+### 多模型评审修复（对标 Biomni 长 loop 的稳健性加固）
+
+- **genpilotChat 不再假阳性成功**：terminal exec 失败（容器未就绪/CLI 报错/超时）时如实返回 `ok:false`，避免把错误文本当 LLM 成功内容，污染 dcs_llm / dcs_self_review / dcs_skill_route 三条链路。
+- **DCS 自带 LLM 鉴权回退**：系统注入的 `LLM_API_KEY` 缺失或 401 时，自动回退到用户已配置的 Genos API key（base64 内嵌、命令串不落明文、默认 --no-history）直连 DCS LLM 网关，实测调通。
+- **dcs_self_review**：产物证据采集改 `Promise.all` 并行（6 个文件最坏耗时从 ~680s 降到 ~45s）、工具超时提到 600s；路径改用 `shq` 单引号转义（杜绝 `$()`/反引号注入）；LLM 不可用时保守置 `verdict=rerun` 并新增 `llmError` 输出字段，不再无依据给出 pass/revise。
+- **dcs_skill_route 中文召回修复**：新增 `CN_EN_BIO_TERMS` 中英扩充表 + 复用 `KEYWORD_TO_CATEGORY` 类别词扩充（「单细胞数据差异表达分析」对目标技能从 0 分 → 7 分）；短 ASCII 关键词（sv/bin/fold 等）改词边界匹配，消除 csv/service/combine 等子串误命中；剔除 `de`/`go` 泛化词；三路检索改并行；工作流分页提到 200 条；`top_k=0` 支持；llm_rank 下标去重；readAction 名称加引号。
+- **其他**：`dcs_skill_read` 拒绝 `..` 路径段并修复容器绝对路径分支死代码（既有 bug）；`catInContainer` / `dcs_db_query` 改 `shq` 单引号防注入（既有注入面）；`normSelfReview` 非法 verdict 归空（修掉恒等三目）；`buildTrajectory` 对非法 `finishedAt` try/catch 兜底；termExec 容器自动 open 加进程内互斥锁（防并行 open 争用）。
+
 ## [2.10.0] - 2026-08-28
 
 ### 执行中自批评 / 自适应 refine（对标 Biomni 长 loop）
