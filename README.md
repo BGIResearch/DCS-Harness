@@ -1,8 +1,17 @@
 # dsh-dcs-cloud
 
+[![GitHub stars](https://img.shields.io/github/stars/xuxun-oss/DCS-Harness?style=flat-square)](https://github.com/xuxun-oss/DCS-Harness/stargazers)
+[![GitHub license](https://img.shields.io/github/license/xuxun-oss/DCS-Harness?style=flat-square)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/xuxun-oss/DCS-Harness?style=flat-square)](https://github.com/xuxun-oss/DCS-Harness/releases)
+[![GitHub last commit](https://img.shields.io/github/last-commit/xuxun-oss/DCS-Harness?style=flat-square)](https://github.com/xuxun-oss/DCS-Harness/commits/main)
+[![Node version](https://img.shields.io/badge/node-%3E%3D18-brightgreen?style=flat-square)](package.json)
+[![npm](https://img.shields.io/npm/v/dsh-dcs-cloud?style=flat-square&label=npm)](https://www.npmjs.com/package/dsh-dcs-cloud)
+
 DeepSeek Harness 插件：接入 BGI Research 发布的 [**dcs CLI**](https://github.com/BGIResearch/dcs_cli)，面向 **DCS Cloud**（[cloud.stomics.tech](https://cloud.stomics.tech)）做基因组 / 时空组学的**生信研究编排**。
 
 在 DSH 里完成「任务分解 → 深度研究 → 形成研究方案 → 数据检索 → Genpilot 流程复用 → 脚本审计 → 在线/离线执行 → 学术网页报告」的完整闭环。
+
+> 💡 仓库 GitHub 名 `DCS-Harness`，npm 包名 `dsh-dcs-cloud`（同一项目）。
 
 ## 🚀 DCS Harness v2.5（默认 dsh 内嵌，规划式工作流）
 
