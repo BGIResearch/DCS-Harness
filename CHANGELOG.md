@@ -25,6 +25,82 @@
 - `dcs_atlas` Genpilot 范式（`GENPILOT_PATTERN.offlineNote`）与 systemPrompt 第 5 条新增离线容器法则（/data/work、只读挂载、output 结果目录、镜像约定、flag 规避）与任务归属提示（任务归数据所在项目；跨项目数据先 `dcs data copy --target-project`）。
 - `docs/dcs-cli-reference.md` analysis 章节、`docs/dcs-database-atlas.md` 标准配置同步上述注意事项。
 
+## [2.10.1] - 2026-08-28
+
+### 多模型评审修复（对标 Biomni 长 loop 的稳健性加固）
+
+- **genpilotChat 不再假阳性成功**：terminal exec 失败（容器未就绪/CLI 报错/超时）时如实返回 `ok:false`，避免把错误文本当 LLM 成功内容，污染 dcs_llm / dcs_self_review / dcs_skill_route 三条链路。
+- **DCS 自带 LLM 鉴权回退**：系统注入的 `LLM_API_KEY` 缺失或 401 时，自动回退到用户已配置的 Genos API key（base64 内嵌、命令串不落明文、默认 --no-history）直连 DCS LLM 网关，实测调通。
+- **dcs_self_review**：产物证据采集改 `Promise.all` 并行（6 个文件最坏耗时从 ~680s 降到 ~45s）、工具超时提到 600s；路径改用 `shq` 单引号转义（杜绝 `$()`/反引号注入）；LLM 不可用时保守置 `verdict=rerun` 并新增 `llmError` 输出字段，不再无依据给出 pass/revise。
+- **dcs_skill_route 中文召回修复**：新增 `CN_EN_BIO_TERMS` 中英扩充表 + 复用 `KEYWORD_TO_CATEGORY` 类别词扩充（「单细胞数据差异表达分析」对目标技能从 0 分 → 7 分）；短 ASCII 关键词（sv/bin/fold 等）改词边界匹配，消除 csv/service/combine 等子串误命中；剔除 `de`/`go` 泛化词；三路检索改并行；工作流分页提到 200 条；`top_k=0` 支持；llm_rank 下标去重；readAction 名称加引号。
+- **其他**：`dcs_skill_read` 拒绝 `..` 路径段并修复容器绝对路径分支死代码（既有 bug）；`catInContainer` / `dcs_db_query` 改 `shq` 单引号防注入（既有注入面）；`normSelfReview` 非法 verdict 归空（修掉恒等三目）；`buildTrajectory` 对非法 `finishedAt` try/catch 兜底；termExec 容器自动 open 加进程内互斥锁（防并行 open 争用）。
+
+## [2.10.0] - 2026-08-28
+
+### 执行中自批评 / 自适应 refine（对标 Biomni 长 loop）
+
+- 新增 `dcs_self_review` 自批评节点：输入模块目标 + 产物清单 → 自动采集证据（容器产物文件存在性/大小/行数、本机文件 size）→ 调 Genpilot LLM 自评 → 输出 `{verdict: pass/revise/rerun, evidence, risks, nextAction}`；传 project/module/run_id 时自动把 verdict + OAA 三段式持久化进对应运行（ReAct 循环在模块粒度上成立）。
+- `dcs_run_update` 新增 `oaa`（observation/assessment/action）与 `self_review` 结构化字段；执行阶段 prompt 重写为「评估-调整循环」：每个模块完成后强制 ①检查产物 ②写 OAA ③异常时用 dcs_module_update 调整后续未开始模块 desc/顺序（不新增模块、不触发人审）④失败先自评定位再重跑 v2（dcs_run_start 自动递增版本）。
+
+### 工具级动态编排（ToolRetriever）
+
+- 新增 `dcs_skill_route` 技能路由：输入任务/模块目标（自然语言）→ 自动并行检索 技能库（973 条）+ 公共 WDL 工作流 + 专家库，术语相关度打分合并去重排序，输出候选（名称/类别/用途/读取命令）；可选 `llm_rank=true` 用 Genpilot LLM 二次排序（Biomni ToolRetriever 的 LLM 选工具）。
+
+### ReAct 推理图 / self-critique 显式化
+
+- 运行记录新增 OAA（观察→评估→行动）与 selfReview（verdict/证据/风险/下一步）字段，项目管理窗口运行卡显示 verdict 徽章 + OAA 三段（循环状态一眼可见）。
+- 交付文档新增第 9 章节「执行轨迹」：`dcs_delivery_update` 传 `includeTrajectory=true` 自动把各模块 OAA/自评/产物汇总成可读的推理图产物（无需手写），前端 SECTION_META 同步渲染。
+
+### Biomni 公共数据库查询（B1 落地）+ 个人技能支持
+
+- 新增 `dcs_db_query` 工具：uniprot / gwas / ensembl / drugbank / opentargets 五个公共生物医学数据库只读查询（REST），主路径容器执行、插件本机直连兜底。
+- **个人技能自动生成**：首次调用 `dcs_db_query` 时幂等自动把 `biomni-db-query` 技能（SKILL.md + query_db.py）写入容器 `/work/{user}/skills/`，用户零操作即得，且生成后可编辑、可被 `dcs_skill_read` / `dcs_skill_route` 读取路由（B1：Biomni database 工具库进入工具检索候选池）。
+- `dcs_skills_list` 新增 `scope` 参数（public=公共库默认 / personal=个人技能 / all=合并），个人技能以 `personal/` 前缀标记。
+- `dcs_skill_read` 支持 `personal/<技能名>`（容器 /work/{user}/skills/）与容器绝对路径（/work/...、/Files/...），叶子名自动在公共+个人里定位。
+- `dcs_skill_route` 新增 `include_personal`（默认 true），自动生成的个人技能默认进入路由候选。
+
+## [2.9.0] - 2026-08-28
+
+### 结果交付：可拖动 3D 分子结构（structure3d）
+
+- 交付图表新增 `structure3d` 类型：`dcs_delivery_update` 的 charts 可直接投递 PDB（容器路径/本地路径/URL），交付窗口内渲染可拖拽 3D 结构。
+- MoleculeViewer 组件：卡通/球棍/表面/pLDDT 四种样式、并列/叠合两种布局、侧链显示、截图/全屏工具栏。
+- 多结构叠合使用自实现 Kabsch 算法（3x3 Jacobi 特征分解，往返 RMSD < 0.001Å），不依赖 3Dmol 付费 API。
+- 3Dmol 从 cdnjs 2.4.0 本地化并懒加载（`/v2/vendor/3dmol.js`，508KB，首次用到 3D 才下载，零首屏影响）。
+- 新增 PDB 文件服务：`/v2/chart-file`（任意媒体）、`/v2/serve-local/<name>`（本地文件白名单安全代理）、`/v2/chart-image` 按扩展名给 MIME。
+
+### 结果交付：视觉与图文混排升级
+
+- 8 章节独立主题色 + 英文小标 + 3px 强调边；「科学发现与主要结论」hero 金色渐变底；顶部章节速览 chips 平滑滚动。
+- 结构化发现渲染：`### 发现 N：…` 自动切成编号发现卡片（序号徽章 + 加粗标题 + 附图容器），`%%chart:id%%` 图表在卡片内就地内嵌（含标题行内占位符的剥离重排），图文一体。
+- 新 markdown 语法：`==高亮==`、`~~删除线~~`、`> 引用块`、`---` 分隔线；`**重点**` 荧光笔效果；表格圆角斑马纹；图表卡阴影 + 悬浮抬升。
+- 末尾「数据图表」区只放未被正文引用的图表 + 自动收集的分析图。
+
+### 工作流画布：纵向分层布局
+
+- 画布从横向分层改为**纵向分层**：依赖深度=行号、层内节点横向排布、超宽自动换行、行内居中——基本消除横向拖动，纵向滚动浏览全流程。
+- 宽度经 ResizeObserver 实测自适应；普通滚轮留给页面纵向滚动，Ctrl/⌘+滚轮缩放；边路由改垂直贝塞尔。
+
+### 防崩加固（整窗永不白屏）
+
+- 三层 React ErrorBoundary（图表卡/章节/整窗）+ 顶层视图守卫（项目管理/会话地图/结果交付），任一组件异常只显示内联错误卡（含错误信息自诊断）。
+- WebGL 预检（webgl2/webgl/experimental 三探）：远程桌面/无 GPU 环境显示可操作降级提示，其余图表不受影响。
+- 修复 MoleculeViewer useState 解构隐患核查（全库 40+ 处 useState 审计）与图表冻结对象提交（不可变更新 + 工具入口防御深拷贝）。
+
+### 图片交付自包含
+
+- 修复 delivery-update 图片本地化 bug：本机绝对路径图片直接复制进 `dcs-img-cache`（此前误用 dcs CLI 下载本机路径导致 charts 一直存外部引用，源文件删除即丢失）。
+- 容器路径图片继续下载缓存，交付展示离线可用。
+
+### 防回归：静态检查脚本
+
+- 新增 `scripts/check-hooks.cjs`：拦截 useState setter 解构错误与图表对象原地赋值两类已修复 Bug 模式 + 双文件语法检查。
+- `npm run check` / `precommit` 钩子，支持 `CHECK_ROOT` 覆盖接入 CI。
+
+### 其他
+
+- 会话隔离保持：每个对话只显示该会话的结果交付项目。
+
 ## [2.8.1] - 2026-08-23
 
 ### 紧急修复：SSE 连接关闭时 ctx.off 崩溃导致 dsh 进程退出
