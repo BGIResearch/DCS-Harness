@@ -1,9 +1,9 @@
 # dsh-dcs-cloud
 
-[![GitHub stars](https://img.shields.io/github/stars/xuxun-oss/DCS-Harness?style=flat-square)](https://github.com/xuxun-oss/DCS-Harness/stargazers)
-[![GitHub license](https://img.shields.io/github/license/xuxun-oss/DCS-Harness?style=flat-square)](LICENSE)
-[![GitHub release](https://img.shields.io/github/v/release/xuxun-oss/DCS-Harness?style=flat-square)](https://github.com/xuxun-oss/DCS-Harness/releases)
-[![GitHub last commit](https://img.shields.io/github/last-commit/xuxun-oss/DCS-Harness?style=flat-square)](https://github.com/xuxun-oss/DCS-Harness/commits/main)
+[![GitHub stars](https://img.shields.io/github/stars/BGIResearch/DCS-Harness?style=flat-square)](https://github.com/BGIResearch/DCS-Harness/stargazers)
+[![GitHub license](https://img.shields.io/github/license/BGIResearch/DCS-Harness?style=flat-square)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/BGIResearch/DCS-Harness?style=flat-square)](https://github.com/BGIResearch/DCS-Harness/releases)
+[![GitHub last commit](https://img.shields.io/github/last-commit/BGIResearch/DCS-Harness?style=flat-square)](https://github.com/BGIResearch/DCS-Harness/commits/main)
 [![Node version](https://img.shields.io/badge/node-%3E%3D18-brightgreen?style=flat-square)](package.json)
 [![npm](https://img.shields.io/npm/v/dsh-dcs-cloud?style=flat-square&label=npm)](https://www.npmjs.com/package/dsh-dcs-cloud)
 
@@ -32,7 +32,7 @@ v2.0 曾把 DCS 研究工作台做成独立 profile（`dcs-harness`）单独开�
 
 ```bash
 # 1) 把插件装进默认 dsh（本地开发用本仓库路径；发布后用 github: 源）
-dsh plugin --profile web add /path/to/DCS-Harness   # 或 github:xuxun-oss/DCS-Harness
+dsh plugin --profile web add /path/to/DCS-Harness   # 或 github:BGIResearch/DCS-Harness
 # 重启 dsh web 后，「项目管理 / 结果交付」两个窗口自动出现在对话上方；
 # 设置 → DCS Cloud：配置 PAT 后即可开始使用。
 
@@ -134,7 +134,7 @@ chmod +x dcs && sudo mv dcs /usr/local/bin/dcs
 
 ```bash
 # 从 GitHub 安装（推荐）
-dsh plugin --profile web add github:xuxun-oss/DCS-Harness
+dsh plugin --profile web add github:BGIResearch/DCS-Harness
 
 # 或本地目录安装
 dsh plugin --profile web add /path/to/DCS-Harness
