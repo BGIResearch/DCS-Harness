@@ -31,6 +31,14 @@
     "docs"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xuxun-oss/DCS-Harness.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xuxun-oss/DCS-Harness/issues"
+  },
+  "homepage": "https://github.com/xuxun-oss/DCS-Harness#readme",
   "dependencies": {},
   "dsh": {
     "client": {
