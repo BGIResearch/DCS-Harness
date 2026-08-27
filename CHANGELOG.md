@@ -2,6 +2,30 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.10.0] - 2026-08-28
+
+### 执行中自批评 / 自适应 refine（对标 Biomni 长 loop）
+
+- 新增 `dcs_self_review` 自批评节点：输入模块目标 + 产物清单 → 自动采集证据（容器产物文件存在性/大小/行数、本机文件 size）→ 调 Genpilot LLM 自评 → 输出 `{verdict: pass/revise/rerun, evidence, risks, nextAction}`；传 project/module/run_id 时自动把 verdict + OAA 三段式持久化进对应运行（ReAct 循环在模块粒度上成立）。
+- `dcs_run_update` 新增 `oaa`（observation/assessment/action）与 `self_review` 结构化字段；执行阶段 prompt 重写为「评估-调整循环」：每个模块完成后强制 ①检查产物 ②写 OAA ③异常时用 dcs_module_update 调整后续未开始模块 desc/顺序（不新增模块、不触发人审）④失败先自评定位再重跑 v2（dcs_run_start 自动递增版本）。
+
+### 工具级动态编排（ToolRetriever）
+
+- 新增 `dcs_skill_route` 技能路由：输入任务/模块目标（自然语言）→ 自动并行检索 技能库（973 条）+ 公共 WDL 工作流 + 专家库，术语相关度打分合并去重排序，输出候选（名称/类别/用途/读取命令）；可选 `llm_rank=true` 用 Genpilot LLM 二次排序（Biomni ToolRetriever 的 LLM 选工具）。
+
+### ReAct 推理图 / self-critique 显式化
+
+- 运行记录新增 OAA（观察→评估→行动）与 selfReview（verdict/证据/风险/下一步）字段，项目管理窗口运行卡显示 verdict 徽章 + OAA 三段（循环状态一眼可见）。
+- 交付文档新增第 9 章节「执行轨迹」：`dcs_delivery_update` 传 `includeTrajectory=true` 自动把各模块 OAA/自评/产物汇总成可读的推理图产物（无需手写），前端 SECTION_META 同步渲染。
+
+### Biomni 公共数据库查询（B1 落地）+ 个人技能支持
+
+- 新增 `dcs_db_query` 工具：uniprot / gwas / ensembl / drugbank / opentargets 五个公共生物医学数据库只读查询（REST），主路径容器执行、插件本机直连兜底。
+- **个人技能自动生成**：首次调用 `dcs_db_query` 时幂等自动把 `biomni-db-query` 技能（SKILL.md + query_db.py）写入容器 `/work/{user}/skills/`，用户零操作即得，且生成后可编辑、可被 `dcs_skill_read` / `dcs_skill_route` 读取路由（B1：Biomni database 工具库进入工具检索候选池）。
+- `dcs_skills_list` 新增 `scope` 参数（public=公共库默认 / personal=个人技能 / all=合并），个人技能以 `personal/` 前缀标记。
+- `dcs_skill_read` 支持 `personal/<技能名>`（容器 /work/{user}/skills/）与容器绝对路径（/work/...、/Files/...），叶子名自动在公共+个人里定位。
+- `dcs_skill_route` 新增 `include_personal`（默认 true），自动生成的个人技能默认进入路由候选。
+
 ## [2.9.0] - 2026-08-28
 
 ### 结果交付：可拖动 3D 分子结构（structure3d）
