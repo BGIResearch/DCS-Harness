@@ -2,6 +2,16 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.14.0] - 2026-08-28
+
+### 新增：对话式任务委托（Genpilot 对话优先执行，多轮反问补信息）
+
+- **核心范式**：所有投递/分析任务都可以**直接以对话方式把想法提交给 Genpilot 执行**——Genpilot 作为执行者理解任务、判断所需环境/镜像/命令；**若信息不足会反问（questions），用 answers 补充后再次调用，多轮对话直到 ready=true**，再按方案执行。
+- **新增 `dcs_task_delegate` 工具**：把任务想法（task_desc）交给 DCS Genpilot 对话，返回 understanding/needSaw/image/envSetup/commands/ready/questions；ready=false 时用 answers 回答 questions 后再次调用（多轮）；submit=true 且 ready 时按对话方案直接投递离线任务（needSaw=true 用 SAW-ST-V8.2.2 + 环境初始化，false 用通用 ubuntu:24.04-python3.12）。
+- **真实环境验证**：Genpilot 对「对这批 Stereo-seq 数据做比对」第一轮反问 5 个问题（数据路径/参考基因组/输出目录/工具/样本信息），第二轮补充后给出完整 bcSTAR 比对方案（needSaw=true，SAW-ST-V8.2.2，source /opt/saw-8.2.2/env.sh，双端 zcat 比对命令）。
+- **systemPrompt 更新**：步骤 4 改为「第一优先级 = 对话式任务委托」，明确投递/分析类任务优先 `dcs_task_delegate` 对话提交想法、反问补信息多轮；执行阶段引导同步更新。
+- **SAW 环境识别增强**：`isSawProbeCommand` → `isSawCommand`——bc* 工具（bcSTAR/bcSaw/bcBarcode）无论运行还是 --help 探测都需 SAW 环境（缺 LD_LIBRARY_PATH 时 --help 也会失败）；支持绝对路径调用（/opt/saw-8.2.2/lib/bcstar/bcSTAR）；**非 SAW 任务（通用 python/pandas/系统命令）原样透传，不加载 SAW 环境**——由 Genpilot 对话判断任务所需环境/镜像。
+
 ## [2.13.0] - 2026-08-28
 
 ### 新增：模块执行「对话优先」范式（Genpilot 对话驱动每个模块）
