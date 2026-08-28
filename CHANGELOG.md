@@ -2,7 +2,33 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [2.13.0] - 2026-08-28
+
+### 新增：模块执行「对话优先」范式（Genpilot 对话驱动每个模块）
+
+- **背景**：每个模块的任务优先通过 Genpilot 对话（dcs_llm chat）方式执行——先对话定方案，再按方案执行，失败回灌对话。
+- **新增 `dcs_module_consult` 工具**：把模块目标 + 项目上下文（项目目标/自定义数据/分析计划/依赖模块产物/可用能力）交给 DCS Genpilot 对话，产出**结构化执行方案**（plan 概述 + steps 步骤数组[step/action/expect] + risks 风险备选）+ 文本摘要。提供 project_id/module_id 时自动采集项目上下文。
+- **执行阶段引导更新（systemPrompt）**：每个模块开始前**先调 dcs_module_consult（或 dcs_llm）通过 Genpilot 对话确定执行方案**，再按方案执行；执行中失败、结果异常、参数不确定时**回到对话**（dcs_task_diagnose / dcs_llm / dcs_module_consult）分析调整，而不是闷头重试。
+- **闭环**：对话定方案 → 按 steps 执行（在线容器/离线任务/WDL/Genpilot 对话）→ 失败/异常回灌对话调整 → OAA 评估 → 下一模块。
+
+### 新增：Genpilot 对话式任务诊断与全流程咨询（对话优先范式）
+
+- **背景**：很多任务投递/运行问题可以通过与 Genpilot 对话的方式分析解决，而非依赖纯本地规则。
+- **新增 `dcs_task_diagnose` 工具**：用 Genpilot 对话分析离线/WDL 任务失败原因——自动采集任务详情（analysis info / workflow task_info）+ 日志（log / task_log）+ 投递参数（command/镜像/资源/挂载）作为证据，组装结构化 prompt（含 DCS 平台规则：镜像 url 路径约定、资源格式、/data/work 工作目录、只读挂载、-m 挂载、任务归属、SAW 环境加载）交给 DCS Genpilot LLM，输出结构化 JSON（rootCause/category/confidence/evidence/fix/nextAction）+ 文本摘要。适合投递失败、运行失败、任务被拒等场景深度归因。
+- **失败路径自动接入**：`submitDcsTask` 宿主通道投递失败且本地规则未命中（笼统错误）时，自动调 Genpilot 对话深度诊断（60s 同签名去重，不重复消耗 LLM），结果以「🧠 Genpilot 对话诊断」附在错误后。
+- **`dcs_llm` 增强 json_mode**：请求结构化 JSON 输出并解析返回（data 对象 + 文本摘要双输出），适合失败诊断/参数预检等需要程序化处理的场景。
+- **全流程对话咨询**：数据检索、流程选择、参数填写、失败诊断均可通过 `dcs_llm` / `dcs_task_diagnose` 与 Genpilot 对话完成。
+
+### 新增：SAW 运行环境自动加载（投递 bc* 工具探测命令前）
+
+- **背景**：投递 SAW（Stereo-seq Analysis Workflow）工具探测命令（如 `bcSTAR --help` / `bcSaw -h`）前，bc* 工具因缺 LD_LIBRARY_PATH（anaconda 动态库）与 PATH 而报错或误判工具不可用。
+- **二选一加载策略（dcs_configure sawEnvMode 配置）**：
+  - `source` —— 先 `source <sawRoot>/env.sh`（或对应 setenv 脚本）初始化完整运行环境；
+  - `ldpath` —— 直接 `export LD_LIBRARY_PATH=<sawRoot>/anaconda/lib:$LD_LIBRARY_PATH` 后直跑工具（如 `bcSTAR --help`）；
+  - `auto`（默认）—— env.sh 存在则 source，否则回退 LD_LIBRARY_PATH（兼容无 env.sh 的安装）；
+  - `off` —— 不自动加载。
+- `sawRoot` 缺省 `/opt/saw-8.2.2`，可用 `dcs_configure sawRoot=<路径>` 覆盖。
+- **接入点**：`dcs_terminal_exec`（在线容器）与 `dcs_offline_run` / `dcs_parallel_run`（离线投递 s 型，经 `submitDcsTask` 统一入口）——识别 bc* 系列 / SAW 主脚本 + 探测意图（--help/-h/--version/-v）时自动前置环境初始化；支持 `&&` / `;` / `||` 链式命令与 bash -c / source / cd / export 包装。非 SAW 命令原样透传，不影响普通执行。
 
 ### 离线任务投递鲁棒性：错误透传 + 失败诊断 + 描述修正（PR #1 整合进 v2.12.0 多通道投递）
 
