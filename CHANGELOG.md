@@ -2,6 +2,14 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.14.5] - 2026-08-28
+
+### 明确：Genpilot 对话在项目在线容器内进行（项目对话任务）
+
+- **机制说明**：Genpilot 对话（dcs_llm / dcs_task_delegate / dcs_module_consult / dcs_task_diagnose）均在**项目在线容器内**进行——即「在项目里新建任务、在任务容器里对话」，对话绑定当前项目（容器归属项目，鉴权自动注入）；容器未开时插件自动 terminal open。
+- **systemPrompt 步骤 7**：补充「Genpilot 对话均在项目在线容器内进行」的说明。
+- **真实验证**：LungCancerFFPESpatial 项目容器内 Genpilot 对话 5.94s 返回（flash 模型），专业回答肺癌 FFPE bcSTAR 配置检查要点。
+
 ## [2.14.4] - 2026-08-28
 
 ### 强化：模块分析任务强制优先 Genpilot chat 对话模式（强制分层）
