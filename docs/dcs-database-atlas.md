@@ -66,8 +66,9 @@ DCS Cloud 有 11 个片区，分两类：**BGI 中心节点**（官方 DCS 流�
 PGP 项目（BGI-时空）里的真实离线任务揭示的标准用法：
 
 **标准配置**
-- 镜像：`ubuntu:24.04-python3.12`；资源：`4c 16g`
-- 工作目录：`/work/{username}/{project}_{date}/`
+- 在线容器镜像：`ubuntu:24.04-python3.12`；资源：`4c 16g`（插件自动转换为 `vf=16g,num_proc=4`）
+- 在线容器工作目录：`/work/{username}/{project}_{date}/`
+- ⚠️ 离线任务（`dcs_offline_run`）环境不同：工作目录 `/data/work`，`/Files`、`share-data` 只读；挂载数据容器内需补全 `/data/input/` 前缀；镜像须为云平台镜像库 url 路径（如 `public-library/<名>:latest`，不要用 Docker Hub 短名，会报 `image_url不存在`）
 
 **目录结构**
 ```
