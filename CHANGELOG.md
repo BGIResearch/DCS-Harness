@@ -2,6 +2,35 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.12.0] - 2026-08-28
+
+### 修复：离线/WDL 任务投递输入文件对引擎不可见（外部导入实体挂载）
+
+- **根因**：插件此前 `dcs_offline_run` / `dcs_workflow_run` / `dcs_parallel_run` 全走**宿主侧** `dcs analysis run` / `dcs workflow run`（Go CLI v1.1.0）。该 CLI **无 `task` 子命令、无 `-m` 容器挂载语义**，而外部导入实体（如 `entity_id=VIRE-chip202205001`）的输入文件在数据管理可见、但**未挂载进任务容器**，导致 WDL/离线引擎「看不到」这些文件——正是投递频繁失败、且**不是计费问题**的原因。
+- **官方正确通道**：Genpilot Pod 内 `/dcs-sdk-soft/dcs task run -t s|w` 走**容器挂载体系**，`-m` 显式挂载 `-m /Files/...` 数据文件后引擎才看得到（脚本投递走 `-t s`，WDL 投递走 `-t w`）。
+- **修复（多通道 + 自动挂载）**：新增统一任务投递助手 `submitDcsTask`，三处投递工具全部改走它：
+  1. **离线 shell（`s` 型）优先**经 Genpilot Pod 内通道执行 `dcs task run`（`-t s`），并**自动推导 `-m` 挂载**——凡输入引用 `/Files/...`、外部导入实体文件等路径，自动提取并挂载（`extractMountFiles` / `toMountList`）；`-m` 只取真正输入来源（command / inputs / batch_file / 显式 mount），**不把 `output_path`（结果输出目录）当输入挂载**。
+  2. Pod 内通道**不可用**（session/token 过期、unknown command、容器未开/未就绪）时**自动降级宿主 CLI**（`analysis run`），并在返回里标注所用通道（`channel: pod|host`）；**业务/参数/资源/镜像校验失败不降级**，直接报回真实原因，避免掩盖错误。
+  3. 结果统一解析 task_id / task_ids（兼容 terminal exec 包装的 stdout 文本兜底）。
+- **WDL（`w` 型）按平台规范投递**：`dcs_workflow_run` 走**宿主 `workflow run`**（`-n/-v/-e/-i/--table`，不传 `-m`——宿主 workflow run 无 `-m`）。**移除 `-j` JSON 投递**（WDL 规范禁止），并明确「WDL 请配合 `dcs_wdl_fill_parameter` + `dcs_wdl_submit_task` 以启用离线回调与自动续跑；禁止 Pod 内 `terminal_exec` 手写 `dcs task run` 投 WDL」。
+- **验证**：`node --check` 与 `npm run check` 静态回归通过；`extractMountFiles` / `toMountList` / s、w 参数拼装冒烟通过（外部实体 `/Files/VIRE-chip202205001/...` 与 `/Files/ReferenceData/...` 均能自动推导进 `-m`）；经 `critical-review-expert` 与独立模型双轮评审修正（WDL 通道合规、`-j` 移除、`output_path` 隔离、降级集补全、未用变量清理）。
+
+### 新增：builtin 云技能接线（cloud-terminal / cloud-public-resource / dcs-data-manager / dcs-workflow-skill / literature-search）
+
+- `skillCatalog` 改为在 `skills_snapshot.json`（973 条）之外，**额外扫描 `/public/skills/builtin_skills/` 目录**，把 `cloud-terminal`、`cloud-public-resource`、`dcs-data-manager`、`dcs-workflow-skill`、`literature-search`、`dcs-skills-manager`、`dcs-expert-skill`、`dcs-notebook-skill`、`genpilot`、`preview-omics-data`、`image-manager` 等平台内置技能纳入候选（按优先级排序，按 name 去重），使它们能被 `dcs_skills_list` / `dcs_skill_read` / `dcs_skill_route` 发现与读取。
+- `dcs_skills_list` 的 `category=builtin_skills` / `native` 过滤自然覆盖新条目；`dcs_skill_read` 的叶子名定位也能命中 `builtin_skills/cloud-terminal`。
+
+### 新增：专家优先路由（先专家后技能）
+
+- `atlas.js` 的 `EXPERTS` 扩充为实际存在的 7 位：`scrna-seq-expert` / `stereo-seq-expert` / `wgs-wes-germline-expert` / `cima-expert` / `hcc-multiomics-pathology-expert` / `cell-annotation-expert`（分析类）+ `critical-review-expert`（评审/把关类）；新增 `EXPERT_KIND` 区分分析 vs 评审。
+- `dcs_skill_route` 的专家候选**加相关度加成**（分析类 +0.9、评审类 +0.6，先跑分析再让把关），并在 `category` 标注 `expert/analysis` / `expert/review`，让 agent 一眼识别「分析 → 把关」接力链。
+- `dcs_expert_read` 描述/参数补全 7 位专家名。
+
+### 新增：项目归属判断（带特定目标数据必须在已有项目分析）
+
+- 立项流程改为**先问「新建 / 已有项目」**：若用户提供特定目标数据（自备数据 /Files、容器 /work/...、上游产物、链接）→ **必须落已有项目**（数据挂在上游项目上，另开新项目会导致引擎看不到输入），仅无既有数据时才新建。写入 systemPrompt 步骤 0。
+- systemPrompt 同步更新步骤 0.5 / 2 / 5，新增云技能专项引导（cloud 技能边界、投递挂载、`-m` 推导、**禁 Linux find** 扫 /Files/public、数据检索用 `dcs table/data find`）。
+
 ## [2.11.0] - 2026-08-28
 
 ### 新增：执行看门狗（防项目意外中止 / 自动断点续跑）

@@ -21,6 +21,8 @@ v2.0 曾把 DCS 研究工作台做成独立 profile（`dcs-harness`）单独开�
 
 **v2.6.2 · Genpilot 默认 + 原生 skill/专家 + Genos 预测模型区分**：新增「**默认引擎 = DCS Genpilot**」与「**一次使用 = 一个 Genpilot 项目**」两条默认规则（每次用 `dcs_project_create` 立项，项目 code 登记到「项目管理」窗口）；并支持读取 **DCS 原生技能库**（`/public/skills`，973 条）与 **专家库**（`/public/skills/experts`）；**Genos 预测模型**（VCF→RNA 信号，1.2B）与 **Genpilot 对话 LLM**（deepseek-v4-pro 等）在插件中彻底区分，避免混淆。
 
+**v2.12.0 · 投递多通道（Pod 内 `dcs task run` + 自动 `-m` 挂载）+ builtin 云技能接线 + 专家优先**：修复「**离线/WDL 任务输入文件对引擎不可见**」——此前投递走宿主 CLI（`analysis`/`workflow`，无 `-m` 挂载语义），外部导入实体（如 `VIRE-chip202205001`）的文件在数据管理可见但引擎看不到；现改为**优先走 Genpilot Pod 内 `dcs task run -t s|w`**（容器挂载体系 + `-m` 显式挂载输入文件），Pod 通道不可用时自动降级宿主 CLI 并标注通道。并把 **builtin 云技能**（cloud-terminal / cloud-public-resource / dcs-data-manager / dcs-workflow-skill / literature-search）接入 skillCatalog 供发现读取，synPrompt 增加「**先专家后技能**」路由与「**带特定目标数据必须在已有项目分析**」的项目归属判断。
+
 **两个核心窗口**（`conversation.view` tab 环，随每个对话更新，`对话`原样保留）：
 
 | 窗口 | 内容 |
