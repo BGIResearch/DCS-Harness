@@ -2,6 +2,15 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.10.2] - 2026-08-28
+
+### 修复：项目管理窗口按钮无法唤醒 AI（「根据意见重新修正计划」/「批准计划并自动执行」）
+
+- **根因**：`/v2/project/revise-request` 与 `/v2/project/approve-plan` 的唤醒逻辑 `wakeSession` 只调用 `session.append('user/message', …)` 往会话日志写入一条事件，**不会触发 agent 回合**——DSH 中只有 `agent.followup()`（把消息投进 inbox 并 `wakeDriver()`）才会真正唤醒 agent 开始下一轮。因此用户点击「🔄 根据意见重新修正计划」或「🚀 批准计划并自动执行」后，数据（planStatus=approved、反馈留痕）都保存了，但 AI 从未被唤醒，既不修订计划也不自动执行。
+- **修复**：`wakeSession` 改为优先通过 `ctx.agents.get(sessionId)` 拿到 live Agent 并调用 `agent.followup({ id, role:'user', content, source:{kind:'plugin', plugin:'dcs-project-review'} })` 真正入队一个 user 回合；Agent 不在线时回退为写日志留痕并返回 `woken:false`（前端已有提示「请在对话窗口直接说明该请求」）。
+- **附带**：两条唤醒消息补充项目 ID（project_id=…），agent 醒来后能直接定位到对应项目修订/执行，无需从上下文猜测。
+- **验证**：`node --check` 语法通过；`npm run check` 静态回归通过。
+
 ## [2.10.1] - 2026-08-28
 
 ### 多模型评审修复（对标 Biomni 长 loop 的稳健性加固）
