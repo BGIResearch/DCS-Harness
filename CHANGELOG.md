@@ -2,6 +2,16 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.14.1] - 2026-08-28
+
+### 修复：Genpilot LLM 调用 504 stream timeout
+
+- **根因**：dcsapi LLM 网关对单次流式请求有 ~180s 硬超时；`deepseek-v4-pro` 处理复杂结构化 prompt（对话式委托/诊断）时模型推理 ~167s，撞上网关限制返回 504 stream timeout。
+- **默认模型切换**：`genpilotChat` 默认 `deepseek-v4-pro` → `deepseek-v4-flash`（相同复杂 prompt 实测 10-13s vs pro 167s，输出质量一致；可显式指定 pro）。
+- **超时提升**：python `urlopen` 180→420s；terminal exec `--timeout` 300→420s；外层 `timeoutMs` 320s→450s。
+- **自动重试**：LLM 调用遇 504/502/503/超时/stream timeout 自动重试一次，避免瞬时网关抖动直接失败。
+- **真实验证**：flash 对话式委托第一轮 10.31s 返回（pro 需 167.73s），正确反问 5 个补充问题。
+
 ## [2.14.0] - 2026-08-28
 
 ### 新增：对话式任务委托（Genpilot 对话优先执行，多轮反问补信息）
