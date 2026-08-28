@@ -12,18 +12,68 @@
 - 失败响应压平时补充 `hint`（`；提示：…`）、`retryable`（`（可重试）`）、信封级 `request_id`（`[request_id: …]`，可用 `dcs history get` 反查）与 `metadata`。
 - 笼统错误（99999 系统内部错误 / 81201 等）自动附上 stderr 末尾，尽量带出底层 `api_msg`，不再纯黑盒。
 
-**离线投递失败诊断（`dcs_offline_run` / `dcs_parallel_run`）**
-- 失败时自动带 `--debug` 重跑同一命令（仅诊断），从输出中抓取底层 `api_msg` 拼入错误。
+**离线投递失败诊断（`submitDcsTask` 统一入口，覆盖 `dcs_offline_run` / `dcs_parallel_run` 两条通道）**
+- 宿主通道失败时自动带 `--debug` 重跑同一命令（仅诊断），从输出中抓取底层 `api_msg` 拼入错误；Pod 通道业务失败直接附「下一步」提示。
 - 已知错误模式给出可操作的「下一步」提示：`image_url不存在` → 用云平台镜像库 url 路径（如 `public-library/<镜像名>:latest`）并经 `dcs_public_search`（resType=img）确认；资源格式错 → 必须 `vf=<内存>g,num_proc=<核数>`；permission denied / 只读 → 离线容器工作目录是 `/data/work`；unknown shorthand flag → 复杂命令写成脚本文件再 `bash` 执行。
-- `dcs_parallel_run` 对同一批分片只做一次 `--debug` 诊断，避免重复开销。
 
 **资源格式本地校验**
-- 新增 `checkDcsResource`：归一化后不满足 `vf=…g,num_proc=…[,gpu=…]` 时直接拒绝投递并给出格式说明，不再把非法格式交给 CLI 报错。
+- 新增 `checkDcsResource`（在 `submitDcsTask` 入口统一生效）：归一化后不满足 `vf=…g,num_proc=…[,gpu=…]` 时直接拒绝投递并给出格式说明，不再把非法格式交给 CLI 报错。
 
 **描述与引导修正**
 - `dcs_offline_run` / `dcs_parallel_run` 的 `image` 描述改为云平台镜像库 url 路径约定（如 `public-library/<镜像名>:latest`），去掉 `ubuntu:24.04-python3.12` 裸用推荐；`command`/`command_template` 描述补充 `/data/work` 工作目录、只读挂载、挂载文件容器内 `/data/input/` 前缀与脚本文件建议（依据官方帮助中心 CLI 手册核实；output 目录同步机制因平台侧问题暂不在插件层给指引）。
 - `dcs_atlas` Genpilot 范式（`GENPILOT_PATTERN.offlineNote`）与 systemPrompt 第 5 条新增离线容器法则（/data/work、只读挂载、output 结果目录、镜像约定、flag 规避）与任务归属提示（任务归数据所在项目；跨项目数据先 `dcs data copy --target-project`）。
 - `docs/dcs-cli-reference.md` analysis 章节、`docs/dcs-database-atlas.md` 标准配置同步上述注意事项。
+
+## [2.12.0] - 2026-08-28
+
+### 修复：离线/WDL 任务投递输入文件对引擎不可见（外部导入实体挂载）
+
+- **根因**：插件此前 `dcs_offline_run` / `dcs_workflow_run` / `dcs_parallel_run` 全走**宿主侧** `dcs analysis run` / `dcs workflow run`（Go CLI v1.1.0）。该 CLI **无 `task` 子命令、无 `-m` 容器挂载语义**，而外部导入实体（如 `entity_id=VIRE-chip202205001`）的输入文件在数据管理可见、但**未挂载进任务容器**，导致 WDL/离线引擎「看不到」这些文件——正是投递频繁失败、且**不是计费问题**的原因。
+- **官方正确通道**：Genpilot Pod 内 `/dcs-sdk-soft/dcs task run -t s|w` 走**容器挂载体系**，`-m` 显式挂载 `-m /Files/...` 数据文件后引擎才看得到（脚本投递走 `-t s`，WDL 投递走 `-t w`）。
+- **修复（多通道 + 自动挂载）**：新增统一任务投递助手 `submitDcsTask`，三处投递工具全部改走它：
+  1. **离线 shell（`s` 型）优先**经 Genpilot Pod 内通道执行 `dcs task run`（`-t s`），并**自动推导 `-m` 挂载**——凡输入引用 `/Files/...`、外部导入实体文件等路径，自动提取并挂载（`extractMountFiles` / `toMountList`）；`-m` 只取真正输入来源（command / inputs / batch_file / 显式 mount），**不把 `output_path`（结果输出目录）当输入挂载**。
+  2. Pod 内通道**不可用**（session/token 过期、unknown command、容器未开/未就绪）时**自动降级宿主 CLI**（`analysis run`），并在返回里标注所用通道（`channel: pod|host`）；**业务/参数/资源/镜像校验失败不降级**，直接报回真实原因，避免掩盖错误。
+  3. 结果统一解析 task_id / task_ids（兼容 terminal exec 包装的 stdout 文本兜底）。
+- **WDL（`w` 型）按平台规范投递**：`dcs_workflow_run` 走**宿主 `workflow run`**（`-n/-v/-e/-i/--table`，不传 `-m`——宿主 workflow run 无 `-m`）。**移除 `-j` JSON 投递**（WDL 规范禁止），并明确「WDL 请配合 `dcs_wdl_fill_parameter` + `dcs_wdl_submit_task` 以启用离线回调与自动续跑；禁止 Pod 内 `terminal_exec` 手写 `dcs task run` 投 WDL」。
+- **验证**：`node --check` 与 `npm run check` 静态回归通过；`extractMountFiles` / `toMountList` / s、w 参数拼装冒烟通过（外部实体 `/Files/VIRE-chip202205001/...` 与 `/Files/ReferenceData/...` 均能自动推导进 `-m`）；经 `critical-review-expert` 与独立模型双轮评审修正（WDL 通道合规、`-j` 移除、`output_path` 隔离、降级集补全、未用变量清理）。
+
+### 新增：builtin 云技能接线（cloud-terminal / cloud-public-resource / dcs-data-manager / dcs-workflow-skill / literature-search）
+
+- `skillCatalog` 改为在 `skills_snapshot.json`（973 条）之外，**额外扫描 `/public/skills/builtin_skills/` 目录**，把 `cloud-terminal`、`cloud-public-resource`、`dcs-data-manager`、`dcs-workflow-skill`、`literature-search`、`dcs-skills-manager`、`dcs-expert-skill`、`dcs-notebook-skill`、`genpilot`、`preview-omics-data`、`image-manager` 等平台内置技能纳入候选（按优先级排序，按 name 去重），使它们能被 `dcs_skills_list` / `dcs_skill_read` / `dcs_skill_route` 发现与读取。
+- `dcs_skills_list` 的 `category=builtin_skills` / `native` 过滤自然覆盖新条目；`dcs_skill_read` 的叶子名定位也能命中 `builtin_skills/cloud-terminal`。
+
+### 新增：专家优先路由（先专家后技能）
+
+- `atlas.js` 的 `EXPERTS` 扩充为实际存在的 7 位：`scrna-seq-expert` / `stereo-seq-expert` / `wgs-wes-germline-expert` / `cima-expert` / `hcc-multiomics-pathology-expert` / `cell-annotation-expert`（分析类）+ `critical-review-expert`（评审/把关类）；新增 `EXPERT_KIND` 区分分析 vs 评审。
+- `dcs_skill_route` 的专家候选**加相关度加成**（分析类 +0.9、评审类 +0.6，先跑分析再让把关），并在 `category` 标注 `expert/analysis` / `expert/review`，让 agent 一眼识别「分析 → 把关」接力链。
+- `dcs_expert_read` 描述/参数补全 7 位专家名。
+
+### 新增：项目归属判断（带特定目标数据必须在已有项目分析）
+
+- 立项流程改为**先问「新建 / 已有项目」**：若用户提供特定目标数据（自备数据 /Files、容器 /work/...、上游产物、链接）→ **必须落已有项目**（数据挂在上游项目上，另开新项目会导致引擎看不到输入），仅无既有数据时才新建。写入 systemPrompt 步骤 0。
+- systemPrompt 同步更新步骤 0.5 / 2 / 5，新增云技能专项引导（cloud 技能边界、投递挂载、`-m` 推导、**禁 Linux find** 扫 /Files/public、数据检索用 `dcs table/data find`）。
+
+## [2.11.0] - 2026-08-28
+
+### 新增：执行看门狗（防项目意外中止 / 自动断点续跑）
+
+- **背景**：计划批准后进入全自动执行（planStatus=approved），若过程中因 LLM 调用失败、网络/连接中断、模型异常退出等原因导致 agent 回合意外结束，项目会静默停在半途，无人推进、也无提示。
+- **看门狗巡检**：宿主端每 60s 扫描一次所有「已批准、未终结、仍有待执行模块」的项目。判定「意外停滞」需同时满足：① 存在未完成模块且无 running 模块/运行；② 项目最近实质推进时间（模块/运行的最新 updatedAt/startedAt/finishedAt 最大值）距今超过 10 分钟（排除刚批准的启动窗口与长任务正常空档）；③ 对应会话的 live Agent 当前空闲（`agent.status !== 'running'`，正在跑回合时不打扰）。
+- **自动恢复**：命中后注入一条以「[执行守护]」开头的用户消息唤醒 agent（复用 `wakeSession` 的 `agent.followup()` 机制），指令明确：先检查各模块状态 → **只执行未完成模块**（failed 用 dcs_run_start 重跑 v2、pending 按 dependsOn 继续）→ 已完成模块绝不重复 → 全部完成后 dcs_delivery_update 汇总交付。
+- **防无限循环**：同一项目两次唤醒最小间隔 5 分钟（冷却）；自动唤醒累计上限 3 次，达到上限仍无进展则标记 `watchdog.blockedAt`（需人工介入），此后不再自动打扰，避免烧 token。
+- **启用时机**：点「🚀 批准计划并自动执行」时自动启用（watchdog.enabled=true）；项目完成（全部模块 done）或终结（done/failed/blocked）后自然退出巡检。
+- **可视化**：项目管理窗口新增「🛡️ 执行守护」状态条：运行中（绿）/ 已自动恢复 N 次（黄）/ 需人工介入（红），并显示最近一次恢复原因。
+- **prompt 引导**：systemPrompt 执行阶段新增看门狗/断点续跑指引——收到「[执行守护]」消息时从断点续跑、登记已完成状态、失败重跑 v2、不从头开始。
+- **验证**：`node --check` 语法通过；`npm run check` 静态回归通过；独立测试 17 项断言覆盖候选判定（running 不打扰 / 全部完成退出 / 冷却 / 上限 / blocked 后停止）、持久化与端到端续跑流程。
+
+## [2.10.2] - 2026-08-28
+
+### 修复：项目管理窗口按钮无法唤醒 AI（「根据意见重新修正计划」/「批准计划并自动执行」）
+
+- **根因**：`/v2/project/revise-request` 与 `/v2/project/approve-plan` 的唤醒逻辑 `wakeSession` 只调用 `session.append('user/message', …)` 往会话日志写入一条事件，**不会触发 agent 回合**——DSH 中只有 `agent.followup()`（把消息投进 inbox 并 `wakeDriver()`）才会真正唤醒 agent 开始下一轮。因此用户点击「🔄 根据意见重新修正计划」或「🚀 批准计划并自动执行」后，数据（planStatus=approved、反馈留痕）都保存了，但 AI 从未被唤醒，既不修订计划也不自动执行。
+- **修复**：`wakeSession` 改为优先通过 `ctx.agents.get(sessionId)` 拿到 live Agent 并调用 `agent.followup({ id, role:'user', content, source:{kind:'plugin', plugin:'dcs-project-review'} })` 真正入队一个 user 回合；Agent 不在线时回退为写日志留痕并返回 `woken:false`（前端已有提示「请在对话窗口直接说明该请求」）。
+- **附带**：两条唤醒消息补充项目 ID（project_id=…），agent 醒来后能直接定位到对应项目修订/执行，无需从上下文猜测。
+- **验证**：`node --check` 语法通过；`npm run check` 静态回归通过。
 
 ## [2.10.1] - 2026-08-28
 
