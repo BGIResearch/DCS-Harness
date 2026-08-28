@@ -28,7 +28,7 @@
   - `auto`（默认）—— env.sh 存在则 source，否则回退 LD_LIBRARY_PATH（兼容无 env.sh 的安装）；
   - `off` —— 不自动加载。
 - `sawRoot` 缺省 `/opt/saw-8.2.2`，可用 `dcs_configure sawRoot=<路径>` 覆盖。
-- **接入点**：`dcs_terminal_exec`（在线容器）与 `dcs_offline_run` / `dcs_parallel_run`（离线投递 s 型，经 `submitDcsTask` 统一入口）——识别 bc* 系列 / SAW 主脚本 + 探测意图（--help/-h/--version/-v）时自动前置环境初始化；支持 `&&` / `;` / `||` 链式命令与 bash -c / source / cd / export 包装。非 SAW 命令原样透传，不影响普通执行。
+- **接入点**：`dcs_terminal_exec`（在线容器）与 `dcs_offline_run` / `dcs_parallel_run`（离线投递 s 型，经 `submitDcsTask` 统一入口）——识别 bc* 系列（bcSTAR/bcSaw/bcBarcode）或 SAW 主脚本调用（运行或 --help 探测，bc* 工具缺 LD_LIBRARY_PATH 时连 --help 都会失败）自动前置环境初始化；支持 `&&` / `;` / `||` 链式命令、bash -c / source / cd / export 包装与绝对路径（/opt/saw-8.2.2/lib/bcstar/bcSTAR）。**非 SAW 任务（通用 python/pandas/系统命令）原样透传，不加载 SAW 环境**——由 Genpilot 对话（dcs_module_consult / dcs_llm）判断任务是否需要 SAW，需要时选 SAW 镜像+环境，不需要时用通用镜像。
 
 ### 离线任务投递鲁棒性：错误透传 + 失败诊断 + 描述修正（PR #1 整合进 v2.12.0 多通道投递）
 
