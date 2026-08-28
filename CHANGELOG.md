@@ -2,6 +2,13 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.14.2] - 2026-08-28
+
+### 强化：Genpilot LLM 全面优先使用 deepseek-v4-flash
+
+- `genpilotChat` 默认模型 `deepseek-v4-flash`（v2.14.1 已改）；本次补齐所有残留：`atlas.js` 的 `GENPILOT_PATTERN.llmModel` 与 `GENPILOT_MODELS` 默认标注（pro「旗舰默认」→ flash「默认」）、systemPrompt 立项/解读写作描述、`dcs_llm`/项目模型参数说明——**flash 为默认，pro 仅复杂分析可选**。
+- 理由：dcsapi 网关 180s 流式超时限制下，flash 处理复杂结构化 prompt 仅 10-13s（pro 需 ~167s 撞限），且输出质量一致。
+
 ## [2.14.1] - 2026-08-28
 
 ### 修复：Genpilot LLM 调用 504 stream timeout
