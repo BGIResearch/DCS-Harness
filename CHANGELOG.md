@@ -2,6 +2,15 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.14.3] - 2026-08-28
+
+### 强化：模块执行「Genpilot 对话优先」从建议改为强制流程
+
+- **systemPrompt 执行阶段**：明确「**每模块第一动作=Genpilot chat**」——每个模块开始前**第一步必须先调 Genpilot 对话（dcs_llm / dcs_task_delegate / dcs_module_consult）**，把模块名称/描述/项目上下文作为 prompt 提交，产出执行方案/步骤/命令；**未经 Genpilot 对话理解模块，不得直接执行命令或投递任务**（对话是第一动作，非可选项）。执行中失败/异常/参数不确定回到对话分析，不闷头重试。
+- **`dcs_run_start` 工具**：描述明确「启动前必须先经 Genpilot 对话理解模块并确定执行方案」；execute 增加**对话优先校验**——notes 未记录 Genpilot 对话方案时返回强提示「每模块第一动作=Genpilot chat」；notes 参数要求记录对话方案摘要。
+- **`dcs_run_update` 工具**：描述与 OAA observation 要求记录「已按 Genpilot 对话方案执行」的对应关系。
+- **执行看门狗**：断点续跑唤醒文本要求「每个模块启动前先调 Genpilot 对话理解模块并确定执行方案，未经对话不得直接执行」。
+
 ## [2.14.2] - 2026-08-28
 
 ### 强化：Genpilot LLM 全面优先使用 deepseek-v4-flash
