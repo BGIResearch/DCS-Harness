@@ -157,8 +157,8 @@ dsh plugin --profile web add /path/to/DCS-Harness
 ## 目录
 
 ```
-lib/index.js         宿主半：35+ 工具 + systemPrompt 流程引导 + 「项目管理/DCS/设置」HTTP 路由 + 图片本地化交付
-lib/dcs-client.js    dcs 二进制管理、PAT 登录、命令执行、公共库检索
+lib/index.js         宿主半：48 工具（presentCall 卡片呈现 + 只读工具 isConcurrencySafe）+ systemPrompt 流程引导 + 「项目管理/DCS/设置」HTTP 路由 + 图片本地化交付 + 会话地图 SSE
+lib/dcs-client.js    dcs 二进制管理（30s 解析缓存）、PAT 登录、命令执行、公共库检索
 lib/projects.js      v2 数据模型：项目/模块/运行版本/文件/交付/自定义数据/计划/里程碑存储（~/.dsh/dcs-projects.json，带进程内写锁）
 lib/atlas.js         数据库全图谱（片区/官方工具库/关键词映射/容器公共数据集/Genpilot 范式/模型列表）
 lib/audit.js         脚本静态审计（shell/python/WDL 分级报告）

@@ -2,6 +2,20 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.15.0] - 2026-09-01
+
+### 优化：对齐 dsh 0.1.1-rc.2 / 0.1.2-alpha 平台能力（工具呈现 + 并行调用 + 性能）
+
+本次改造针对「最新升级的 dsh 版本」做了系统体检：dsh-tools 已支持 `presentCall/presentResult`（工具调用卡片）与 `isConcurrencySafe`（并行工具调用），会话事件新增 `ignorable` 标记，且宿主 API 全部确认兼容（`defineTool`/`ctx.slots`/`webServer.register`/`sessionPersistence.readFrom` 等）。据此完成以下优化：
+
+- **新增：关键工具工具卡片呈现（presentCall/presentResult）**——对齐 dsh-tools 0.1.1+ 的 ToolCallView 能力：`dcs_terminal_exec` 声明为 **terminal 卡片**（pending 显示命令/工作目录，完成后带 stdout 输出）；`dcs_offline_run` / `dcs_parallel_run` / `dcs_workflow_run` / `dcs_task_delegate` 声明 execute 卡片；`dcs_data_ls` / `dcs_container_ls` / `dcs_public_search` / `dcs_db_query` / `dcs_task_status` / `dcs_llm` / `dcs_self_review` 声明 search/fetch 卡片。capable UI（dsh-client-ui-tool）消费卡片，其他 UI 自动回退通用卡片。
+- **新增：只读工具标记 isConcurrencySafe**——14 个无副作用查询类工具（dcs_status / dcs_data_ls / dcs_data_find / dcs_data_info / dcs_workflow_search / dcs_task_status / dcs_atlas / dcs_public_search / dcs_container_ls / dcs_data_inspect / dcs_find_results / dcs_skills_list / dcs_experts_list / dcs_db_query）声明为并发安全，dsh 并行工具调用（parallel-tool-call-execution）可同时发出多个检索，显著提速「检索 → 方案」环节。
+- **优化：dcs 二进制解析加缓存（30s）**——`resolveDcsBinary` 原来每次 `runDcs` 都逐个 spawn `--version` 探测（PATH 无 dcs 时最坏 3×20s 超时）；现按「配置指纹 + managed 二进制 mtime/size」缓存 30s，候选并行探测，命中后 1ms 复用（实测 20ms → 1ms），高频轮询（费用/状态 8s/15s）不再反复踩超时。
+- **优化：HTTP 路由串行循环并行化**——`/v2/offline-tasks`（10 个父任务详情）、`/v2/costs`、`/v2/project-overview`（分片任务状态）从逐模块逐 run 串行 await 改为 Promise.all 并行收集；`/v2/delivery-images` 直接登记的图并行下载、候选目录并行扫描。多运行项目窗口轮询从「最坏 N×60s」降到单次往返。
+- **优化：dcsTaskInfo 并发首查去重**——并行路由与 8s/15s 轮询同时对同一 taskId 首查时只发一次 `dcs analysis info`，其余复用同一 Promise（in-flight 去重），避免打爆 DCS API。
+- **优化：会话地图投影统一 + ignorable 过滤**——提取公共 `projectSessionEvent()` 供 HTTP 拉取与 SSE 实时推送共用（消除两处重复投影逻辑）；兼容 dsh 0.1.2-alpha.2 恢复的 `SessionEvent.ignorable`，被标记为可忽略的内部噪音事件一律不进会话地图。
+- **说明**：`agents`/`sessionTitle` 为可选增强服务（代码已 ctx.get 判空兜底），保持不入硬 inject，避免在缺服务的 profile 阻塞插件加载。
+
 ## [2.14.8] - 2026-08-28
 
 ### 新增：Genpilot 回答可折叠展示（默认收起摘要，点击展开完整内容）
