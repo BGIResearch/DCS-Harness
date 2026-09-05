@@ -16,6 +16,19 @@
 - **优化：会话地图投影统一 + ignorable 过滤**——提取公共 `projectSessionEvent()` 供 HTTP 拉取与 SSE 实时推送共用（消除两处重复投影逻辑）；兼容 dsh 0.1.2-alpha.2 恢复的 `SessionEvent.ignorable`，被标记为可忽略的内部噪音事件一律不进会话地图。
 - **说明**：`agents`/`sessionTitle` 为可选增强服务（代码已 ctx.get 判空兜底），保持不入硬 inject，避免在缺服务的 profile 阻塞插件加载。
 
+### 新增：时空组学 P0-P2 改进 + Genos 变异评测 + dcs 二进制认证升级（2026-09-05 补充）
+
+- **新增工具 `dcs_script_submit`**：把脚本内容写入离线容器 `/data/work` 并投递（复杂命令先落脚本再 `bash`，避免 `-t/-c` 被 CLI 当全局 flag）。
+- **新增工具 `dcs_task_wait`**：轮询离线任务直至 settle（completed/failed/warning/canceled），复用日志子任务下钻（`extractSubtaskIds`）；配合 `dcs_script_submit` 形成「投递 → 等待 → 取日志」闭环。
+- **新增工具 `dcs_image_probe`**：探测镜像是否含 python3 及其版本，缓存 24h。优先 `dcs image info` 的 `tools.Python3`/`language` 元数据零成本判定（实测元数据自带 232 个 Python3 包），元数据无法判定才投最小离线任务实测；后续 `dcs_offline_run`/`dcs_script_submit` 遇 python3 命令自动查缓存提示（`imagePyHint`）。
+- **新增工具 `dcs_auth_export`**：把已配置凭证（PAT + Genos key）注入容器 env 文件（base64，secret 不进对话/argv）或掩码自查。Genos #1 token 互通：宿主会话凭证操作走宿主 CLI，容器内只注入 `DCS_PAT` + `HG38_VCF_PREDICT_API_KEY`。
+- **新增工具 `dcs_genos_deploy_vcf`**：跨区复制 VCF 到 Genos 人源服务可读的 DCS-华南1 存储（`data info` → `data copy --target-zone 华南1` → 回读 `file_id`），Genos #2。
+- **安全：PAT 静态加密**——PAT 由明文落盘改为 AES-256-GCM（scrypt 派生密钥 + hostname/DSH_HOME 绑定），`loadCfg` 透明解密，`DCS_PAT` 环境变量与 `file.pat` 兼容；本次已把存量明文 PAT 安全迁移为 `patEnc`（备份留底、往返校验一致、无明文残留）。
+- **dcs 二进制认证更新**：`DCS_VERSION` v1.1.0 → v1.2.0，`RELEASE_SHA` 五平台全量改为官方 SHA256SUMS 真值（linux-amd64 另经实测下载校验 `f4cf819d`）。实测确认 dcs 的 `--version` 恒输出 V1.0.0（上游未 bump），故只信 SHA256，`dcs_status` 改报实际 SHA256 前缀，不再用版本常量冒充。
+- **dcs v1.2.0 兼容适配**：v1.2.0 起 `project current` 字段漂移（`username`/`current_project_name` → `project_name`/`user_role`，新增 `billing_group`/`failed_task_count`/`is_arrears`），`dcsStatus` 本地归一化兜底（username 从 `config show` 补全、token 不外泄）；本机二进制升级后因 token AES 格式不兼容需重建登录态，用已配置 PAT 重新 `dcs login`。
+- **实测修正**：`dcs_image_probe` 兜底探测资源 `vf=4g,num_proc=1` 低于最小机型 4c 16g（报 81201「匹配不到计算资源」）→ 改 `vf=16g,num_proc=4`；`explainOfflineError` 81201 归因由「资源缺参」改为「未匹配可用机型/通用失败」，并新增最小机型提示。
+- **其它**：`projects.js` bestProjectMatch；`report.js` `%%chart` 渲染修复 + A4 打印 CSS；`dcs_llm` 超时 600s + `category`/`warning` 字段；`dcs_terminal_exec` 支持 `run_in_background`。
+
 ## [2.14.8] - 2026-08-28
 
 ### 新增：Genpilot 回答可折叠展示（默认收起摘要，点击展开完整内容）
