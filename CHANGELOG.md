@@ -10,6 +10,7 @@
 - **`dcs_biolens_search` 行为升级**：① 默认在项目在线容器里向 Genpilot 提交找数据任务（指示其优先调用 biolens_search、优先给出容器 /public 真实路径、禁止编造）；② 对话返回的只读检索命令经白名单（safeSearchCmd）在容器内执行，**返回 /public 真实命中路径证据**；③ Genpilot 对话不可用或无容器命中时，自动降级**宿主直连 BioLens MCP**（mcp=true，可关）查公开库记录与文件（download_url）；④ 新增 `channel`（genpilot+容器 / genpilot / mcp）、`evidence`、`answers`（多轮补信息）输出字段。
 - **会话流程同步**：systemPrompt「学术检索 A / 找数据步骤 2」、README、docs/dcs-database-atlas.md 均改为「第一动作 = dcs_biolens_search（Genpilot 对话·容器 /public 优先），宿主 MCP 兜底」。
 - **实测记录**：BGI-时空容器 delegate 对话返回「command -v biolens_search → 无工具 → find /public 容器检索」的容器优先方案（当前 delegate 后端未见 biolens_search 工具，平台侧助手具备）；该方案的只读命令经工具容器内执行可给出 /public 真实命中（如 /public/database/CNGBdb/pub/SciRAID/stomics/STDS0000018/20、STDS0000139 等小鼠脑数据）；宿主 MCP 兜底独立实测命中 4870 条（SpatialGWAS 小鼠全脑图谱 Top）。工具在 biolens_search 进入 Genpilot 后端后会自动切换到「工具直接命中 + dcs_path」路径（提示词已指示优先使用）。
+- **已知边界（下一版本候选）**：web 助手侧的 biolens_search + dcs_path 由平台 Genpilot 代理上下文（DCS Cloud 集成）生成——经实测，dcs CLI 无 agent 通道、容器内无 hermes/gateway、`dcs_llm`/delegate 后端为纯对话模型（自述无工具调用）、且**宿主/容器直连 BioLens MCP 均返回空 `dcs_path`**。要用上 web 侧完整能力（含 dcs_path 容器映射），下一版本需平台侧提供 agentic 对话 API 入口（如带 user_id/project_id/task_id + X-Access-Token 的 /chat/stream 类接口）后，harness 新增 agentic 对话通道、在项目容器内执行并回读 dcs_path；在此之前保持「Genpilot 对话定方案 + 容器内只读验证 /public 命中 + MCP 兜底公开库」。
 
 ## [2.16.0] - 2026-09-08
 
