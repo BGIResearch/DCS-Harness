@@ -2,6 +2,14 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.16.2] - 2026-09-08
+
+### 更新：BioLens MCP 升为常开补充通道 + 默认片区 = 时空片区（BGI-时空）
+
+- **MCP 从「兜底」改为「常开补充」**：`dcs_biolens_search` 的宿主直连 BioLens MCP 不再只在「Genpilot 无容器命中」时才跑——**mcp=true（默认）时始终并行补充**公开库记录与文件（`search_datasets` + 前 N 条 `list_dataset_files`），与 Genpilot 对话/容器验证结果并列返回：容器 /public 命中优先展示（可直接用），MCP 补充给出公开库 record_id / download_url / dcs_path 供交叉对照；`channel` 输出如实标注 `genpilot+容器+mcp补充` 等组合。Genpilot 对话不可用时 MCP 独立兜底保持不变（channel=mcp）。
+- **默认片区 = 时空片区（BGI-时空）**：实测容器 /public 公共数据（STDS 公共数据集、技能库等）只在 BGI Center 片区节点挂载（DCS-华南1 等公共云节点的 /public 为空或不全）。找数据默认片区明确为 BGI-时空；当前片区非时空时，先 `dcs region switch BGI-时空`（或项目管理窗口切换节点）再跑，否则容器验证拿不到 /public。
+- **同步更新**：工具描述 / `mcp` 参数说明 / 输出 schema / systemPrompt「学术检索 A / 找数据步骤 2」/ README / docs/dcs-database-atlas.md。
+
 ## [2.16.1] - 2026-09-08
 
 ### 修正：找数据默认走「Genpilot 对话」（容器 /public 已有数据优先），宿主 MCP 降为兜底

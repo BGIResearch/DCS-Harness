@@ -54,7 +54,7 @@ DCS Cloud 有 11 个片区，分两类：**BGI 中心节点**（官方 DCS 流�
 
 ## 4. 找数据优先级
 
-0. **Genpilot 对话找数据（默认，第一动作）**：`dcs_biolens_search` 默认在**项目在线容器里走 Genpilot 对话**找数据——Genpilot 助手的 biolens_search（BioLens 组学数据集索引，约 11.7 万条 / 139 来源库，`db.cngb.org/biolens/mcp`）既能命中公开数据集，也能**优先找到容器 /public 里已有的本地数据**；对话返回的只读检索命令由工具在容器内执行验证，给出 /public 真实命中路径/dcs_path。Genpilot 对话无命中时再**宿主直连 BioLens MCP 兜底**公开库（`search_datasets`/`list_dataset_files`：bm25+向量排序、download_url；经 DCS Cloud 集成调用会补 `dcs_path`）。key：`dcs_api_key set biolens <auth_key>`（db.cngb.org/biolens 申请）或 env `DCS_BIOLENS_KEY`。
+0. **Genpilot 对话找数据（默认，第一动作；默认片区 = 时空片区 BGI-时空）**：`dcs_biolens_search` 默认在**项目在线容器里走 Genpilot 对话**找数据——Genpilot 助手的 biolens_search（BioLens 组学数据集索引，约 11.7 万条 / 139 来源库，`db.cngb.org/biolens/mcp`）既能命中公开数据集，也能**优先找到容器 /public 里已有的本地数据**；对话返回的只读检索命令由工具在容器内执行验证，给出 /public 真实命中路径/dcs_path。**宿主直连 BioLens MCP 始终作为补充通道**（mcp=true 默认：并行给出 `search_datasets`/`list_dataset_files` 的公开库记录与文件——bm25+向量排序、download_url；经 DCS Cloud 集成调用会补 `dcs_path`）。注意：容器 /public 数据只在 **BGI Center 片区（BGI-时空等）** 挂载，当前片区非时空时先 `dcs region switch BGI-时空`（或项目管理切换节点）再跑。key：`dcs_api_key set biolens <auth_key>`（db.cngb.org/biolens 申请）或 env `DCS_BIOLENS_KEY`。
 1. **定组学类别**：按研究问题关键词 → 类别。
 2. **找公共数据优先查容器 `/public`**：`dcs_container_ls` 列 `/public` 与 `/public/database/CNGBdb/pub/SciRAID/stomics/`（STDS 编号数据集），`dcs_data_inspect` 看 h5ad 结构；容器 `/public` 里没有的元数据或跨片区资源再用 `dcs_public_search` 搜公共库。
 3. **官方流程优先**：`dcs_workflow_search(public=true)`，命中 official_tag=DCS 最稳。
@@ -101,7 +101,7 @@ output/              结果产物
 | 需求 | 工具 |
 | --- | --- |
 | 查图谱 | `dcs_atlas` |
-| 数据检索 | **`dcs_biolens_search`**（Genpilot 对话找数据·容器 /public 优先，第一动作；MCP 兜底 11.7 万条/139 库）→ `dcs_container_ls`/`dcs_data_inspect`（容器 `/public` 验证）→ `dcs_public_search`（公共库元数据）→ `dcs_data_ls/find/info/download` |
+| 数据检索 | **`dcs_biolens_search`**（默认片区=时空 BGI-时空；Genpilot 对话找数据·容器 /public 优先，第一动作；MCP 补充 11.7 万条/139 库）→ `dcs_container_ls`/`dcs_data_inspect`（容器 `/public` 验证）→ `dcs_public_search`（公共库元数据）→ `dcs_data_ls/find/info/download` |
 | 流程复用 | `dcs_workflow_search/info` |
 | 在线运行 | `dcs_terminal_exec/file` |
 | 离线投递 | `dcs_offline_run` / `dcs_parallel_run`（分片并行）/ `dcs_workflow_run` |
