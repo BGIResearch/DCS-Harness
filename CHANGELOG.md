@@ -2,6 +2,25 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.16.0] - 2026-09-08
+
+### 新增：dcs_biolens_search（BioLens MCP 直连检索，Genpilot biolens-search 同一后端）+ 找数据流程升级 + dsh 0.1.2-rc.1 适配核验
+
+**背景**：DCS Genpilot 平台近期上线了 **biolens-search**——Genpilot 助手侧的检索能力，通过其 `biolens_search` 工具调用 Biolens 平台底层的组学数据集索引（约 11.7 万条、139 个来源库），仅对话可触发、无 CLI。经实测确认其程序化通道 = **BioLens MCP 服务**（`https://db.cngb.org/biolens/mcp`，`search_datasets` / `list_dataset_files` 两个 JSON-RPC 工具，宿主 HTTP 直连即可），据此完成以下升级：
+
+- **新增工具 `dcs_biolens_search`**：宿主直连 BioLens MCP（无需容器、无需 Genpilot 对话）：
+  - `search_datasets`：中英文自然语言检索组学数据集（CNGBdb / CROST / NCBI GEO / CZ CELLxGENE / SpatialGWAS / MOSTA 时空图谱等），bm25+向量混合打分排序，返回 record_id / source / title / availability / access / score；检索 1-5s，替代全盘 find；
+  - `list_dataset_files`（execute=true 默认对命中前 files 条取文件清单）：返回 file_name + `download_url`；**经 DCS Cloud 集成（Genpilot 容器对话）调用时会补 `dcs_path` 容器内路径** → 「优先命中容器 /public 已有数据」落地；
+  - key 管理：`dcs_api_key set biolens <auth_key>`（db.cngb.org/biolens 申请，与 Genpilot 同一 key）或 env `DCS_BIOLENS_KEY`；端点可配 `biolensUrl`（cfg.biolensUrl，默认官方端点）；key 不落 git。
+- **找数据流程升级（systemPrompt / README / atlas 同步）**：会话「学术检索 A / 步骤 2 找数据」第一动作改为 `dcs_biolens_search`（容器 /public 优先语义：BioLens 命中 → dcs_container_ls/dcs_data_inspect 验证容器路径 → dcs_public_search/dcs_data_find 兜底），替代「先逐目录 ls/find」的旧习惯。
+- **dsh 0.1.2-rc.1 适配核验（实测）**：对 `@deepseek-ai/dsh-tools` 0.1.1-rc.2 → 0.1.2-rc.1 做类型差异比对——插件使用的 `defineTool` / `isConcurrencySafe` / `presentCall/presentResult` 选项**全部保留、签名不变**（0.1.2 新增 PTC 模式 `presentationMode: native|ptc|both` 与 `run_code`，为可选增强、默认 native 不影响现有工具呈现）；peerDependencies `^0.1.1-rc.2` 天然覆盖 0.1.2-rc.1，无需改依赖即可升级 profile。README 已注明支持范围。
+- **实测记录（2026-09-08，BGI-时空 / DCS-华南1）**：
+  - MCP 直连 `search_datasets("小鼠脑时空图谱 E16.5 全脑 Stereo-seq")` → 命中 4870 条，Top5 均为 SpatialGWAS 小鼠全脑 Stereo-seq 图谱（record_id `biolens:spatialgwas:SpatialGWAS-T168` 等，files_available / public）；检索秒级返回；
+  - `list_dataset_files` 对 GEO（GSE201610）返回 5 个文件 + download_url（宿主直连无 dcs_path）；dcs_path 仅在 DCS Cloud 集成调用时返回（与官方输出契约一致）；
+  - 对照组：BGI-时空容器 `/public/database/CNGBdb/pub/SciRAID/stomics/` 确实已镜像小鼠脑数据（STDS0000018/20 Visium、STDS0000139 MouseBrain_P7 等），与 BioLens 检索结果可互相印证；
+  - 结论：容器 /public 技能快照（2026-09-04）与 Genpilot 对话工具侧存在同步时差，biolens-search 以 MCP 形式独立演进，harness 直连 MCP 不受快照时差影响。
+- **其它**：`dcs-client.js` DEFAULT_CFG 增加 `biolensUrl`；工具描述/输出 schema 均按 MCP 真实契约编写（readOnlyHint/idempotentHint 等已在实现中遵守，只检索不下载不分析）。
+
 ## [2.15.0] - 2026-09-01
 
 ### 优化：对齐 dsh 0.1.1-rc.2 / 0.1.2-alpha 平台能力（工具呈现 + 并行调用 + 性能）
