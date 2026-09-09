@@ -2,6 +2,24 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.17.0] - 2026-09-09
+
+### 新增：「项目文件」tab —— 浏览当前项目容器文件（小文件在线预览 / 大文件下载）
+
+- **客户端**（lib/client.js）：对话视图 `conversation.view` 新增第 4 个 tab **「项目文件」**（id `dcs-files`，order 62）：
+  - 面包屑导航 + 快捷入口：🏠 工作目录 `/work/{user}`（默认）、📚 `/public`、🧬 时空公共数据集 `/public/database/CNGBdb/pub/SciRAID/stomics`，另支持输入任意容器绝对路径跳转（仅限 /work /public /home，路径白名单）；
+  - 目录/文件列表（名称/类型/大小/修改时间，目录优先排序），点击进入目录、双击打开；
+  - **小文件在线预览**：文本类（txt/csv/tsv/md/log/json/py/sh/r/vcf/bed 等 ≤4MB）内联文本查看，图片（png/jpg/gif/webp/svg ≤6MB）base64 内联显示；二进制/过大文件提示下载；
+  - **大文件下载**：任意大小，附件形式（attachment）保存，文件名 UTF-8 编码。
+- **宿主**（lib/index.js）：新增 4 组路由：
+  - `GET /v2/files/status` → 当前项目/用户/片区 + 容器 home（/work/{user}）；
+  - `GET /v2/files/list?path=` → python 列容器目录（`dcs terminal exec`，JSON 条目：name/type/size/mtime，≤1000 条）；
+  - `GET /v2/files/read?path=` → `dcs terminal download` 拉本地缓存后按扩展名/大小分类预览（文本 utf-8、图片 base64）；
+  - `GET /v2/files/download?path=` → 容器文件下载到本地缓存（sha1 去重，已存在复用）后 **createReadStream 流式回传**（attachment，任意大小）；
+  - 新增模块级 `localFileDir/fetchContainerFile/safeContainerPath` 助手（容器路径白名单 /work /public /home，拒绝 `..` 与裸 `/`）。
+- **实测（BGI-时空线上容器）**：列目录 python（/work /public 顶层、JSON 输出）与 `dcs terminal download`（skills_snapshot.json 562KB → 3.8s 下载成功）均已验证；路由为其 1:1 封装。
+- **已知边界**：预览只针对文本/图片小文件；h5ad/bed 等二进制大文件走下载后本地工具查看；需当前片区为容器就绪状态（termExec 内置容器自动开+重试）；文件缓存于本机 `~/.dsh/dcs-file-cache/`（下载去重复用）。
+
 ## [2.16.2] - 2026-09-08
 
 ### 更新：BioLens MCP 升为常开补充通道 + 默认片区 = 时空片区（BGI-时空）
