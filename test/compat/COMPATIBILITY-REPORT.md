@@ -4,12 +4,12 @@
 |---|---|
 | 被测插件 | `dsh-dcs-cloud` v2.15.0 |
 | 目标平台 | **dsh 0.1.5-rc.1**（运行中） / dsh-tools 0.1.5-rc.2 |
-| 测试模块 | `test/compat`（零依赖 ESM，65 例，四层） |
-| 结论 | ✅ **兼容**（65/65 通过，耗时 ~0.15s） |
+| 测试模块 | `test/compat`（零依赖 ESM，93 例，七层） |
+| 结论 | ✅ **兼容**（93/93 通过，耗时 ~0.15s） |
 | 修复缺陷 | 2 处真实缺陷（1 处安全影响、1 处客户端装载） |
 
 ```bash
-npm test          # 全量 65 例
+npm test          # 全量 93 例
 npm run test:contract   # 只看平台契约
 ```
 
@@ -19,10 +19,13 @@ npm run test:contract   # 只看平台契约
 
 | 层次 | 通过 | 说明 |
 |---|---|---|
-| `unit` | 19/19 | 插件纯逻辑（atlas/audit/plan/report/tasks/projects/dcs-client） |
+| `unit` | 23/23 | 插件纯逻辑（atlas/audit/plan/report/tasks/projects/dcs-client） |
 | `contract` | 15/15 | 插件消费的 dsh 平台契约全部成立 |
-| `integration` | 11/11 | 插件可装载，48 个工具全部注册且 schema 可编译 |
+| `integration` | 13/13 | 插件可装载，48 个工具全部注册且 schema 可编译 |
 | `lifecycle` | 20/20 | 配置/任务库/项目库生命周期、权限、幂等 |
+| `upgrade` | 8/8 | 会话格式迁移链演练（升级/降级/损坏三方向） |
+| `frozen` | 5/5 | 冻结参数不可变性（历史 readonly bug 防复发） |
+| `meta` | 9/9 | 测试自身有效性（变异测试、假绿守卫） |
 
 ---
 
@@ -163,6 +166,24 @@ devDependency      : 0.1.1-rc.2    ← 本地开发/CI 装的是旧版
 **防回归**：新增 `lifecycle/platform/client-inject-covers-slots` 用例，
 自动解析 `lib/client.js` 里用到的每个 slot，反查其提供方包是否都在 `inject` 中 ——
 该字段今后不会再静默漂移。
+
+---
+
+## 四·补、测试网自身可靠性（元测试）
+
+本模块用**变异测试**验证「测试真的能抓到问题」，避免一套永远为绿的测试：
+
+| 已验证的变异 | 结果 |
+|---|---|
+| 把 `dcs_terminal_exec` 的 `presentResult` 改名 | `integration/presenters-*` 变红 ✓ |
+| 移除 `dcs_delivery_update` 的两层防御（还原历史 readonly bug） | `frozen/*` 2/5 变红 ✓ |
+| 注入只 `try/catch` 的假绿用例 | `meta/execute-tests-assert-real-success` 变红 ✓ |
+| 断言库自检（`assert(false)` 等必须抛错） | 全部通过 ✓ |
+
+**一个真实教训**：`frozen` 层最初版本用「不存在的项目」+「table/bar 类型图表」
+调 execute，helper 在 `updateDelivery` 处提前返回、图表在 `type !== 'image'` 处
+`continue` —— 两处都压不到赋值分支，于是**还原历史 bug 后用例仍然全过**（假绿）。
+变异测试暴露了它，修正后同一变异 2/5 变红。
 
 ---
 
