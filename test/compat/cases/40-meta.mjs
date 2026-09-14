@@ -279,6 +279,45 @@ test('meta', 'meta/static-check-covers-all-lib-modules', 'check-hooks 的语法�
   }
 });
 
+test('meta', 'meta/importDsh-does-not-fallback-to-bare-specifier', 'importDsh 不从指定安装回退到裸名解析', async () => {
+  // 教训：把指定 DSH_ROOT 里的 dsh-tools 改坏（移除 defineTool 导出）后，
+  // 契约层仍 16/16 全过 —— 因为 importDsh 在指定路径加载失败时
+  // **回退到裸名解析**，从本项目 node_modules 拿到了可用的副本。
+  // 后果：用户以为测的是新 dsh，实际测的是项目内旧包 —— 危险假绿。
+  //
+  // 本守卫：构造一个「存在但入口损坏」的假 dsh 安装，确认 importDsh 报错而非回退。
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { importDsh } = await import('../lib/harness.mjs');
+
+  const dir = mkdtempSync(join(tmpdir(), 'dcs-fakedsh-'));
+  try {
+    // 伪造：<dir>/@deepseek-ai/dsh/package.json（让 findDshRoot 认可）
+    //      <dir>/@deepseek-ai/dsh-tools/lib/index.js（入口存在但语法/导出自毁）
+    mkdirSync(join(dir, '@deepseek-ai', 'dsh', '@deepseek-ai'), { recursive: true });
+    writeFileSync(join(dir, '@deepseek-ai', 'dsh', 'package.json'),
+      JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.0.0-fake' }));
+    mkdirSync(join(dir, '@deepseek-ai', 'dsh-tools', 'lib'), { recursive: true });
+    writeFileSync(join(dir, '@deepseek-ai', 'dsh-tools', 'package.json'),
+      JSON.stringify({ name: '@deepseek-ai/dsh-tools', version: '0.0.0-fake', main: 'lib/index.js' }));
+    writeFileSync(join(dir, '@deepseek-ai', 'dsh-tools', 'lib', 'index.js'),
+      'export { NotDefinedAnywhere };\n');   // 导入即失败
+
+    let err = null;
+    try {
+      await importDsh('@deepseek-ai/dsh-tools', dir);
+    } catch (e) {
+      err = e;
+    }
+    assert(err,
+      'importDsh 在指定安装加载失败时不应「成功」—— 那意味着回退到了裸名解析（会掩盖不兼容）');
+    assert(/不回退|无法从指定的 dsh 安装加载/.test(String(err.message)),
+      `错误信息应说明未回退，实际: ${err.message}`);
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
 // ---------------------------------------------------------------- 运行器契约
 
 test('meta', 'meta/dsh-root-invalid-is-fatal', 'DSH_ROOT 无效时明确报错，不静默回退', async () => {

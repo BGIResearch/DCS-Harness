@@ -278,20 +278,40 @@ export function pkgJson(dir) {
 export async function importDsh(name, dshRoot = findDshRoot()) {
   const tried = [];
   const mods = dshModulesDir(dshRoot);
-  const specs = [];
-  // 注意：必须指向入口文件，不能给目录路径 ——
-  // Node 的 ESM 解析器不支持「目录导入」（ERR_UNSUPPORTED_DIR_IMPORT）。
-  // 早期版本用 join(mods, name) 传目录，只在「项目内恰好能按裸名解析到依赖」时
-  // 才侥幸可用；在干净环境（无 node_modules）会整体失败。
-  if (mods) specs.push(join(mods, name, 'lib', 'index.js'));
-  if (mods) specs.push(join(mods, name));  // 兜底：某些包 exports 支持目录
-  specs.push(name);
-  for (const s of specs) {
+
+  // ⚠ 关键：当调用方**显式指定**了 dshRoot（或自动探测到了），
+  // 必须只从该安装加载 —— 不能回退到裸名解析。
+  //
+  // 原因：裸名会从**本项目 node_modules** 解析，而项目内的版本可能正常。
+  // 若指定安装里的包已损坏/不兼容，回退会静默拿到另一个能用的副本，
+  // 测试全部通过 —— 产生「以为测了新 dsh、实际测的是项目内旧包」的假绿。
+  // （实测：把指定 dsh-tools 的导出改坏后，正是靠裸名回退让 16/16 契约用例全过。）
+  if (mods) {
+    const entry = join(mods, name, 'lib', 'index.js');
     try {
-      return await import(s);
+      return await import(entry);
     } catch (e) {
-      tried.push(`${s}: ${e.message}`);
+      tried.push(`${entry}: ${e.message}`);
+      // 再试包根（某些包 exports 直接指向目录）
+      try {
+        return await import(join(mods, name));
+      } catch (e2) {
+        tried.push(`${join(mods, name)}: ${e2.message}`);
+      }
+      const err = new Error(
+        `无法从指定的 dsh 安装加载 ${name}（不回退到裸名解析，以免掩盖不兼容）：\n  `
+        + tried.join('\n  '));
+      err.tried = tried;
+      err.code = 'ERR_DSH_MODULE_UNRESOLVABLE';
+      throw err;
     }
+  }
+
+  // 未探测到 dsh 安装根时才退回裸名解析
+  try {
+    return await import(name);
+  } catch (e) {
+    tried.push(`${name}: ${e.message}`);
   }
   const err = new Error(`无法加载 ${name}；尝试过：\n  ${tried.join('\n  ')}`);
   err.tried = tried;
