@@ -247,6 +247,106 @@ test('integration', 'load/web-routes-registered', '插件按 0.1.5 WebRoute 契�
   }
 });
 
+test('integration', 'load/presenters-consistent', '呈现契约一致：terminal/diff 卡必须配对 presentResult', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+
+  // dsh 的 presentCall/presentResult 是「待执行卡 / 完成卡」一对。
+  // generic 卡省略 presentResult 会沿用待执行卡片标题（可接受）；
+  // 但 terminal/diff 卡若省略，完成后会用原始文本替换掉终端/差异卡片，
+  // 造成「执行中美观、完成后塌成纯文本」的体验断裂——故强制配对。
+  const CARD_REQUIRES_RESULT = new Set(['terminal', 'diff']);
+  const failures = [];
+  let withCall = 0;
+  let withResult = 0;
+
+  for (const t of state.tools) {
+    const hasCall = typeof t.presentCall === 'function';
+    const hasResult = typeof t.presentResult === 'function';
+    if (hasCall) withCall++;
+    if (hasResult) withResult++;
+    if (!hasCall) continue;
+
+    // 用最小合法参数调用 presentCall，忽略参数校验失败的场景
+    let view;
+    try {
+      view = t.presentCall(minimalArgs(t));
+    } catch {
+      continue;
+    }
+    if (!view || typeof view !== 'object') continue;
+    if (CARD_REQUIRES_RESULT.has(view.card) && !hasResult) {
+      failures.push(`${t.name}: presentCall 返回 card='${view.card}' 但缺少 presentResult`);
+    }
+    if (view.card !== undefined && !['generic', 'terminal', 'diff'].includes(view.card)) {
+      failures.push(`${t.name}: 未知 card 类型 '${view.card}'`);
+    }
+    if (view.card === 'generic' && (!view.title || String(view.title).trim() === '')) {
+      failures.push(`${t.name}: generic 卡缺少 title（卡片会显示为空标题）`);
+    }
+    if (view.card === 'terminal' && (!view.title || String(view.title).trim() === '')) {
+      failures.push(`${t.name}: terminal 卡缺少 title（应显示命令行）`);
+    }
+    if (view.kind !== undefined) {
+      const kinds = ['read', 'edit', 'delete', 'move', 'search', 'execute', 'fetch', 'other'];
+      if (!kinds.includes(view.kind)) failures.push(`${t.name}: 未知 kind '${view.kind}'`);
+    }
+  }
+
+  assert(withCall > 0, '应至少有一个工具声明 presentCall');
+  assertEqual(failures.length, 0, `呈现契约不一致（${failures.length} 处）`, failures);
+});
+
+test('integration', 'load/presenters-render-safe', 'presentResult 对成功/失败两种结果均不抛错', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+  const failures = [];
+  let checked = 0;
+
+  for (const t of state.tools) {
+    if (typeof t.presentResult !== 'function') continue;
+    checked++;
+    // 需覆盖两种态：正常结果与错误结果（presentResult 会看到 result.isError）
+    const samples = [
+      { content: [{ type: 'text', text: 'ok\n' }], isError: false },
+      { content: [{ type: 'text', text: 'boom' }], isError: true },
+      { content: [], isError: false },
+    ];
+    for (const result of samples) {
+      try {
+        const view = t.presentResult(minimalArgs(t), result);
+        if (view !== undefined) {
+          assert(view && typeof view === 'object', `${t.name}.presentResult 应返回对象或 undefined`);
+          assert(view.card, `${t.name}.presentResult 返回的对象缺少 card`);
+        }
+      } catch (e) {
+        failures.push(`${t.name} (isError=${result.isError}): ${e.message}`);
+      }
+    }
+  }
+  assert(checked > 0, '应至少有一个工具声明 presentResult');
+  assertEqual(failures.length, 0, `${failures.length} 处 presentResult 崩溃`, failures);
+});
+
+/** 依据工具的参数 schema 造一份「最小合法」参数。 */
+function minimalArgs(t) {
+  const schema = t.parameters || {};
+  const req = schema.required || [];
+  const args = {};
+  for (const k of Object.keys(schema.properties || {})) {
+    const p = schema.properties[k];
+    if (!req.includes(k)) continue;
+    if (p.type === 'boolean') args[k] = false;
+    else if (p.type === 'number' || p.type === 'integer') args[k] = 1;
+    else if (p.type === 'array') args[k] = [];
+    else if (p.type === 'object') args[k] = {};
+    else args[k] = 'x';
+  }
+  return args;
+}
+
 // ---------------------------------------------------------------- 客户端半
 
 test('integration', 'client/loads-in-moduleloader', '客户端半可在模拟 __ModuleLoader__ 环境中装载', async () => {

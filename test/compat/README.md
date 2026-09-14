@@ -28,11 +28,15 @@ slot 契约。dsh 处于 `0.1.x-rc` 快速迭代期，这些契约随时可能�
 |---|---|---|---|
 | `unit` | 19 | 插件自身纯逻辑对不对（atlas/audit/plan/report/tasks/projects/dcs-client） | 否 |
 | `contract` | 15 | 插件消费的**平台契约**还在不在、签名对不对 | 是 |
-| `integration` | 11 | 插件能否真的装载进去、工具全注册、渲染不崩 | 是 |
+| `integration` | 13 | 插件能否真的装载进去、工具全注册、渲染/呈现不崩 | 是 |
 | `lifecycle` | 20 | 配置/任务库/项目库的读写、权限、幂等、版本递增 | 部分 |
+| `meta` | 8 | **测试自身会不会空转**（断言/运行器/守卫阈值/覆盖完整性） | 是 |
+
+合计 **75 例**。
 
 分层价值：**失败位置直接指向根因**。`unit` 红 = 插件自身 bug；`contract` 红 = dsh 平台变了；
-`integration` 红 = 装载/注册环节被破坏；`lifecycle` 红 = 本地状态管理回归。
+`integration` 红 = 装载/注册环节被破坏；`lifecycle` 红 = 本地状态管理回归；
+`meta` 红 = 测试网本身失效（比功能红更危险，必须优先修）。
 
 ## 关键设计
 
@@ -58,6 +62,17 @@ schema 写法仍被接受；并读取 dsh 包内的 `.d.ts` 与源码文本校�
 ### 5. 安全规则用「危险集 + 安全集」双向断言
 `unit/audit/flags-dangerous-rm` 同时要求危险命令全命中、安全命令零误报，
 避免「正则改宽了乱报警」或「改窄了漏检」这类单边修复。
+
+### 6. 元测试：防止测试网自身空转
+`meta` 层用**变异测试**证明关键断言真的能抓到违规：
+- 断言库自检：`assert(false)` / `assertEqual(1,2)` / `assertIncludes('abc','zzz')` 必须抛错；
+- 运行器自检：注册一个刻意失败的用例，确认运行器判为 `failed` 且保留失败原因；
+- 守卫阈值自检：确认 `load/tool-count` 的 `>=40` 阈值在正常情况可满足
+  （阈值虚高会让用例永远红、虚低则抓不到大面积注册失败）；
+- 平台断言自检：确认 `assertSupportedJsonSchema` 既接受合法也不放行非法 schema。
+
+另有 `integration/load/presenters-consistent`：`terminal`/`diff` 卡必须配对 `presentResult`，
+否则会出现「执行中美观、完成后塌成纯文本」的体验断裂。
 
 ## 已捕获的真实缺陷
 
