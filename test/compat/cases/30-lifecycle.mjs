@@ -249,6 +249,36 @@ test('lifecycle', 'projects/pending-feedback-flow', '人工反馈可写入并被
   });
 });
 
+test('lifecycle', 'lifecycle/delete-project-session-isolated', 'deleteProject 按会话隔离且幂等', async () => {
+  // deleteProject 当前被 index.js import 但**未暴露为工具或路由**（死代码）。
+  // 但它是一处**破坏性**操作 —— 一旦将来接上界面，会话隔离必须正确，
+  // 否则会误删其它会话的项目。故现在就把它测住。
+  await withIsolatedHome(async () => {
+    const { upsertProject, deleteProject, listProjects } = await mod('projects.js');
+
+    // 同名项目存在于两个会话
+    await upsertProject({ project_id: 'A', title: 'A1' }, 'sess-1');
+    await upsertProject({ project_id: 'A', title: 'A2' }, 'sess-2');
+    await upsertProject({ project_id: 'B', title: 'B1' }, 'sess-1');
+
+    const r1 = await deleteProject('A', 'sess-1');
+    assert(r1 && r1.ok === true, `应删除成功: ${JSON.stringify(r1)}`);
+    assertEqual(listProjects('sess-1').map((x) => x.id).join(','), 'B',
+      'sess-1 应只剩 B');
+    assertEqual(listProjects('sess-2').map((x) => x.id).join(','), 'A',
+      'sess-2 的同名项目不应被误删（会话隔离）');
+
+    // 重复删除：应返回明确错误而非静默成功
+    const r2 = await deleteProject('A', 'sess-1');
+    assert(r2 && r2.ok === false, '重复删除应返回 ok:false');
+    assert(r2.error && r2.error.includes('不存在'), `应说明项目不存在: ${JSON.stringify(r2)}`);
+
+    // 删除不存在的项目
+    const r3 = await deleteProject('__never_existed__', 'sess-1');
+    assert(r3 && r3.ok === false, '删除不存在的项目应返回 ok:false');
+  });
+});
+
 // ---------------------------------------------------------------- 交付文档
 
 test('lifecycle', 'projects/delivery-update-revision', '交付文档更新的 revision 单调递增', async () => {

@@ -192,7 +192,24 @@ dsh 0.1.5 提供 `v0-to-v1` / `v1-to-v2` / `v2-to-v3` 迁移链。建议在测�
 构造真实的历史会话文件，验证插件在迁移后的会话上仍能读取
 （`ctx.get('sessionPersistence')`）。当前 `lifecycle` 层只验证了迁移包存在。
 
-### 13. `lib/index.js` 单文件 4707 行
+### 13. 未使用的导出（死代码，建议清理）
+
+实测 `lib/projects.js` 有以下导出**从未被 index.js 使用**，也未被任何测试引用：
+
+| 导出 | 状态 |
+|---|---|
+| `deleteProject` | 被 index.js import 但**未暴露为工具或 HTTP 路由**（不可达） |
+| `projectsPath` | 未使用 |
+| `withProjectLock` | 未使用（内部仍在使用同名锁逻辑） |
+
+**风险**：`deleteProject` 是**破坏性**操作。若将来接上界面（或被人误用），
+其会话隔离必须正确 —— 已先行补测
+`lifecycle/delete-project-session-isolated`（含跨会话误删防护，经变异验证）。
+
+**建议**：明确取舍 —— 要么删除这些导出（减少表面积），
+要么补上工具/路由并明确其确认机制（破坏性操作应有二次确认）。
+
+### 14. `lib/index.js` 单文件 4707 行
 
 48 个工具 + 全部 helper 挤在一个文件里，`client.js` 也有 2479 行。
 **建议拆分**（低风险、纯搬运）：
