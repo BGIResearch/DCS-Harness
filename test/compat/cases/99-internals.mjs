@@ -551,6 +551,43 @@ test('internals', 'internals/check-resource-rejects-garbage', '非法资源规�
   }
 });
 
+// ---------------------------------------------------------------- LLM 输出解析
+
+test('internals', 'internals/extract-json-obj-from-llm-text', 'extractJsonObj 从 LLM 输出中稳健提取 JSON', async () => {
+  // Genpilot 对话返回的常常是「说明文字 + JSON」或 ```json 围栏形式。
+  // 解析失败会让任务诊断/委托拿不到结构化结果，只能退化为纯文本。
+  // 该函数需正确处理：围栏、前后文字、嵌套、以及**字符串内的花括号/引号**。
+  const extractJsonObj = extractFunction('extractJsonObj');
+
+  const cases = [
+    ['{"a":1}', { a: 1 }, '纯 JSON'],
+    ['```json\n{"a":1}\n```', { a: 1 }, 'json 围栏'],
+    ['```\n{"a":1}\n```', { a: 1 }, '无语言围栏'],
+    ['前置说明 {"a":1} 后置说明', { a: 1 }, '夹在文字中'],
+    ['{"a":{"b":2}}', { a: { b: 2 } }, '嵌套对象'],
+    ['{"a":"带 } 的字符串"}', { a: '带 } 的字符串' }, '字符串内含 }（不能误判为结束）'],
+    ['{"a":"含 \\" 引号"}', { a: '含 " 引号' }, '字符串内含转义引号'],
+    ['{"a":1}\n{"b":2}', { a: 1 }, '多个 JSON 取第一个'],
+  ];
+  const problems = [];
+  for (const [input, want, label] of cases) {
+    const got = extractJsonObj(input);
+    if (JSON.stringify(got) !== JSON.stringify(want)) {
+      problems.push(`${label}: ${JSON.stringify(input)} → ${JSON.stringify(got)}（期望 ${JSON.stringify(want)}）`);
+    }
+  }
+
+  // 异常输入：应返回 null 而非抛错（解析失败不能让整个工具崩溃）
+  for (const bad of ['没有 JSON', '', null, undefined, '{"坏":}']) {
+    let got;
+    try { got = extractJsonObj(bad); }
+    catch (e) { problems.push(`${JSON.stringify(bad)} 抛错: ${e.message}`); continue; }
+    if (got !== null) problems.push(`${JSON.stringify(bad)} 应返回 null，实际 ${JSON.stringify(got)}`);
+  }
+
+  assertEqual(problems.length, 0, problems.join('; '));
+});
+
 // ---------------------------------------------------------------- 抽取机制自检
 
 test('internals', 'internals/extraction-mechanism-works', '函数抽取机制本身有效（防静默空转）', async () => {
