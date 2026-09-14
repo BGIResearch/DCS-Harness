@@ -10,7 +10,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { test, assert, assertEqual, ROOT } from '../lib/harness.mjs';
+import { test, assert, assertEqual, assertIncludes, ROOT } from '../lib/harness.mjs';
 
 // ---------------------------------------------------------------- hook 运行时
 
@@ -391,4 +391,60 @@ test('client-render', 'render/chart-types-match-declared', 'ChartView 覆盖工�
   const missing = [...declared].filter((t) => !handled.has(t));
   assertEqual(missing.length, 0,
     `以下类型在 schema 中声明但 ChartView 未处理: ${missing.join(', ')}（用户会看到兜底卡片）`);
+});
+
+
+// ---------------------------------------------------------------- Markdown 注入防护
+
+test('client-render', 'render/markdown-escapes-html', '客户端 Markdown 渲染转义 HTML（防 XSS）', async () => {
+  // 与 lib/report.js 同类缺陷（本轮一并修复）：
+  // 客户端 mdToHtml 的 inline() 只对**代码块**调了 esc()，行内内容直接套标记。
+  // 而它的输入包括 project.plan.content 与交付文档各章节（findings/methods/…），
+  // 这些由模型基于研究结果撰写、夹带上游数据与 DCS 返回文本 —— 属真实注入路径。
+  // 结果经 dangerouslySetInnerHTML 注入，浏览器会执行其中的 <script>。
+  const { components } = extractInternalComponents(['mdToHtml']);
+  const mdToHtml = components.mdToHtml;
+  assertEqual(typeof mdToHtml, 'function', '应取到 mdToHtml');
+
+  const attacks = [
+    '<script>alert(1)</script>',
+    '<img src=x onerror=alert(1)>',
+    '<iframe src=//evil></iframe>',
+    '[x](javascript:alert(1))',
+    '[x](data:text/html,<script>1</script>)',
+  ];
+  const problems = [];
+  for (const a of attacks) {
+    const html = mdToHtml(a);
+    if (/<script[^>]*>alert/i.test(html)) problems.push(`${JSON.stringify(a)}: 未转义 <script>`);
+    if (/<img[^>]*onerror=/i.test(html)) problems.push(`${JSON.stringify(a)}: 未转义 onerror`);
+    if (/<iframe/i.test(html)) problems.push(`${JSON.stringify(a)}: 未转义 <iframe>`);
+    if (/<a[^>]*href="\s*(?:javascript|data):/i.test(html)) {
+      problems.push(`${JSON.stringify(a)}: 危险协议仍渲染为可点击链接`);
+    }
+  }
+  assertEqual(problems.length, 0, `客户端 Markdown 存在注入风险:\n${problems.join('\n')}`);
+});
+
+test('client-render', 'render/markdown-keeps-formatting', '客户端 Markdown 渲染保留正常格式', async () => {
+  const { components } = extractInternalComponents(['mdToHtml']);
+  const mdToHtml = components.mdToHtml;
+
+  const html = mdToHtml([
+    '# 标题',
+    '**粗体** 与 *斜体* 与 `code` 与 ==高亮== 与 ~~删除~~',
+    '',
+    '[文档](https://example.com)',
+    '',
+    '- 项目一',
+    '- 项目二',
+  ].join('\n'));
+
+  assertIncludes(html, '<strong>粗体</strong>', '粗体应保留');
+  assertIncludes(html, '<em>斜体</em>', '斜体应保留');
+  assertIncludes(html, '<code>code</code>', '行内代码应保留');
+  assertIncludes(html, '<mark>高亮</mark>', '高亮应保留');
+  assertIncludes(html, '<del>删除</del>', '删除线应保留');
+  assert(/<a[^>]*href="https:\/\/example\.com"/.test(html), '正常 https 链接应渲染为 <a>');
+  assertIncludes(html, '<li>', '列表应保留');
 });
