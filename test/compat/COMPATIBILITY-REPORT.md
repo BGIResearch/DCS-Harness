@@ -4,11 +4,11 @@
 |---|---|
 | 被测插件 | `dsh-dcs-cloud` v2.15.0 |
 | 目标平台 | **dsh 0.1.5-rc.1**（运行中） / dsh-tools 0.1.5-rc.2 |
-| 测试模块 | `test/compat`（零依赖 ESM，109 例，八层） |
-| 结论 | ✅ **兼容**（109/109 通过，耗时 ~0.34s） |
-| 多版本实测 | ✅ **0.1.5-alpha.1 / 0.1.5-rc.1 / 0.1.5-rc.2 均 109/109 通过** |
+| 测试模块 | `test/compat`（零依赖 ESM，115 例，九层） |
+| 结论 | ✅ **兼容**（115/115 通过，耗时 ~0.46s） |
+| 多版本实测 | ✅ **0.1.5-alpha.1 / 0.1.5-rc.1 / 0.1.5-rc.2 均 115/115 通过** |
 | dcs CLI 实测 | ✅ **22 个插件调用的 dcs 子命令全部存在**（真实 CLI 校验） |
-| 修复缺陷 | 2 处真实缺陷（1 处安全影响、1 处客户端装载） |
+| 修复缺陷 | **4 处真实缺陷**（审计安全 2 处 / 客户端装载 1 处 / 客户端崩溃隔离 1 处） |
 
 ```bash
 npm test          # 全量 93 例
@@ -147,7 +147,25 @@ devDependency      : 0.1.1-rc.2    ← 本地开发/CI 装的是旧版
 安全集 6/6 零误报：rm -f /tmp/x.txt · rm -rf ./build · rm -rf build · ls -l /tmp · mkdir -p /work/a · rm /tmp/a.txt
 ```
 
-### 缺陷 2：`package.json` 的 `dsh.client.inject` 声明了不存在的包 🟠 客户端装载
+### 缺陷 2：设置页缺少渲染错误边界 🟠 整页白屏风险
+
+**现象**：`lib/client.js` 中其余视图（项目管理 / 结果交付 / 会话地图）都用
+`guarded()` 包了 `ErrorBoundary`，**唯独设置页 `DcsCloudSettingsPage` 直接注册**：
+
+```js
+// 修复前
+ctx.slots.register({ name: "settings.section", id: "dcs-cloud", ... }, DcsCloudSettingsPage);
+// 修复后
+ctx.slots.register({ name: "settings.section", id: "dcs-cloud", ... }, guarded(DcsCloudSettingsPage));
+```
+
+**影响**：设置页渲染抛错会冒泡到根，导致设置弹窗（乃至整个页面）空白。
+而设置页承载 PAT 配置与登录，**是用户修复其它问题的入口** —— 崩溃代价比普通视图更高。
+
+**发现方式**：新增的 `client-render` 层用「所有视图注册必须经 `guarded()` 包裹」
+的断言扫出。该断言经变异验证：移除 `guarded()` 后立即变红。
+
+### 缺陷 3：`package.json` 的 `dsh.client.inject` 声明了不存在的包 🟠 客户端装载
 
 **现象**：原值 `@deepseek-ai/dsh-client-runtime` 在 dsh 0.1.5-rc.1 中**不存在**
 （核对官方 63 个 `dsh-client-*` 包，无一声明或引用该包名）。

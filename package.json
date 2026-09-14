@@ -54,7 +54,8 @@
     "test:frozen": "node test/compat/run.mjs -l frozen",
     "test:meta": "node test/compat/run.mjs -l meta",
     "test:matrix": "bash test/compat/matrix.sh",
-    "test:e2e": "DCS_E2E=1 node test/compat/run.mjs -l e2e"
+    "test:e2e": "DCS_E2E=1 node test/compat/run.mjs -l e2e",
+    "test:client": "node test/compat/run.mjs -l client-render"
   },
   "dependencies": {},
   "dsh": {

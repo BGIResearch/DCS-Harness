@@ -11,7 +11,7 @@
 // 层次：unit（纯函数） / contract（平台契约） / integration（插件装载与工具注册）
 //       / lifecycle（模块加载顺序与幂等） / upgrade（会话格式迁移链演练）
 //       / frozen（冻结参数不可变性） / e2e（真实 dcs 调用，可选）
-//       / meta（测试自身有效性）
+//       / client-render（客户端组件真实渲染） / meta（测试自身有效性）
 
 import { readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -33,7 +33,7 @@ for (let i = 0; i < args.length; i++) {
     process.stdout.write(`dsh 兼容性测试
 
   -k, --filter <s>   只跑 id/标题包含 s 的用例
-  -l, --layer <s>    只跑某一层：unit|contract|integration|lifecycle|upgrade|frozen|e2e|meta
+  -l, --layer <s>    unit|contract|integration|lifecycle|upgrade|frozen|e2e|client-render|meta
       --json         输出 JSON 报告
   -q, --quiet        只输出汇总
       --bail         首个失败即停
