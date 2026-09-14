@@ -51,6 +51,7 @@
     "test:integration": "node test/compat/run.mjs -l integration",
     "test:lifecycle": "node test/compat/run.mjs -l lifecycle",
     "test:upgrade": "node test/compat/run.mjs -l upgrade",
+    "test:frozen": "node test/compat/run.mjs -l frozen",
     "test:meta": "node test/compat/run.mjs -l meta"
   },
   "dependencies": {},

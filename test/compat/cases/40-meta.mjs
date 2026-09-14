@@ -118,6 +118,43 @@ test('meta', 'meta/schema-assertion-effective', 'schema 校验断言能识别非
   assert(badThrew, '非法 schema 未被拒绝 —— schemas-compile 用例形同虚设');
 });
 
+// ---------------------------------------------------------------- 假绿防护
+
+test('meta', 'meta/execute-tests-assert-real-success', '调用 execute 的用例必须断言真实成功，而非仅「不抛错」', async () => {
+  // 教训来源：frozen 层最初只断言「没抛 readonly 错误」，
+  // 但代码因项目不存在而提前返回，根本压不到目标分支 —— 假绿。
+  //
+  // 判据必须**逐用例**检查（不能整文件扫描）：同一文件里其它用例写了
+  // ok === true，会掩盖住某个只 try/catch 的假绿用例。
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const dir = join(ROOT, 'test', 'compat', 'cases');
+  const problems = [];
+
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.mjs'))) {
+    const src = readFileSync(join(dir, f), 'utf8');
+    // 按 `test('layer', 'id', 'title', async () => {` 切分用例体
+    const parts = src.split(/(?=test\(\s*'[\w]+'\s*,)/);
+    for (const part of parts) {
+      const idM = part.match(/test\(\s*'[\w]+'\s*,\s*'([^']+)'/);
+      if (!idM) continue;
+      const id = idM[1];
+      // 该用例是否调用了工具的 execute()（排除 `async execute(` 定义）
+      const body = part.slice(0, part.indexOf("\ntest(") === -1 ? part.length : part.indexOf("\ntest("));
+      const seg = part;
+      const calls = [...seg.matchAll(/(?:await\s+)?[A-Za-z_$][\w$.]*\.execute\(/g)];
+      if (calls.length === 0) continue;
+
+      const hasSuccessAssert = /ok\s*===\s*true|res\.ok|assert\(res\b|assertEqual\([^)]*\.ok/.test(seg);
+      const declaredNegative = /负向|应被?拒绝|应抛错|must throw|rejects?|属假绿|未压到/.test(seg);
+      if (!hasSuccessAssert && !declaredNegative) {
+        problems.push(`${f} :: ${id}`);
+      }
+    }
+  }
+  assertEqual(problems.length, 0,
+    `以下用例调用了 execute 但既无成功态断言、也未声明为负向用例（可能假绿）: ${problems.join(', ')}`);
+});
+
 // ---------------------------------------------------------------- 覆盖完整性
 
 test('meta', 'meta/layers-cover-platform-surface', '四层用例均非空（无空跑层次）', async () => {

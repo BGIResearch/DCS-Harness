@@ -32,8 +32,9 @@ slot 契约。dsh 处于 `0.1.x-rc` 快速迭代期，这些契约随时可能�
 | `lifecycle` | 20 | 配置/任务库/项目库的读写、权限、幂等、版本递增 | 部分 |
 | `meta` | 8 | **测试自身会不会空转**（断言/运行器/守卫阈值/覆盖完整性） | 是 |
 | `upgrade` | 8 | 会话格式迁移链：旧版本可迁移、新版本明确拒绝、损坏可诊断 | 是 |
+| `frozen` | 5 | 冻结参数不可变性：工具不得原地修改入参（历史 bug 防复发） | 是 |
 
-合计 **87 例**。
+合计 **93 例**。
 
 分层价值：**失败位置直接指向根因**。`unit` 红 = 插件自身 bug；`contract` 红 = dsh 平台变了；
 `integration` 红 = 装载/注册环节被破坏；`lifecycle` 红 = 本地状态管理回归；
@@ -73,7 +74,21 @@ schema 写法仍被接受；并读取 dsh 包内的 `.d.ts` 与源码文本校�
 - 损坏的头给出**具体缺失字段**（可诊断，而非笼统报错）；
 - 反向检查插件未绕过平台服务直接读 `.jsonl`（否则格式一变就静默错读）。
 
-### 7. 元测试：防止测试网自身空转
+### 7. 冻结输入：参数不可变性
+dsh 的 ToolRuntime 会对 `exec.arguments` 做 deepFreeze。历史 bug：
+`dcs_delivery_update` 对图表对象原地赋值，抛出
+`Cannot assign to read only property 'data'`，导致交付提交失败。
+`frozen` 层用**真实项目的真实 image 文件**压到赋值分支（见下方教训），
+并断言 `res.ok === true` —— 若为 false 会直接报「属假绿」。
+
+> **一个值得记录的教训**：本层最初版本用「不存在的项目」+「table/bar 类型图表」
+> 调 execute，结果 helper 在 `updateDelivery` 处提前返回、图表在
+> `type !== 'image'` 处 `continue`，两处都压不到赋值分支 ——
+> **还原历史 bug 后用例仍然全过**。变异测试暴露了这个假绿。
+> 现已在 `meta/execute-tests-assert-real-success` 里用**逐用例**静态检查
+> 防止同类问题：凡调用 `.execute(` 的用例，必须断言成功态或明确声明为负向用例。
+
+### 8. 元测试：防止测试网自身空转
 `meta` 层用**变异测试**证明关键断言真的能抓到违规：
 - 断言库自检：`assert(false)` / `assertEqual(1,2)` / `assertIncludes('abc','zzz')` 必须抛错；
 - 运行器自检：注册一个刻意失败的用例，确认运行器判为 `failed` 且保留失败原因；
