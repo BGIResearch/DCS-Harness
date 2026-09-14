@@ -463,6 +463,54 @@ test('integration', 'load/cli-view-fields-declared', '返回 cliView 结果的�
   assertEqual(problems.length, 0, problems.join('; '));
 });
 
+test('integration', 'load/error-path-is-structured', '工具失败时返回结构化错误而非抛错', async () => {
+  // 负向用例（刻意不调成功路径）：本用例用会失败的输入调用 execute，
+  // 验证错误路径的结构化，因此不断言 res.ok === true，
+  // 而是断言「不抛错、且错误字段结构正确」。
+  //
+  // 设计约定：所有工具的 output schema 都声明了 error 字段，
+  // 失败时应返回 { ok:false, error:'...' } 而不是抛异常。
+  // 抛异常会让 agent 收到难以处理的堆栈，且丢失「哪个环节失败」的语义。
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+
+  // 先验证约定本身：每个工具都应声明 error 字段
+  const noErrorField = state.tools
+    .filter((t) => !(t.output.schema.properties || {}).error)
+    .map((t) => t.name);
+  assertEqual(noErrorField.length, 0,
+    `以下工具未声明 error 字段（失败时无处承载错误信息）: ${noErrorField.join(', ')}`);
+
+  // 再用「必然失败」的输入调用纯本地工具，确认不抛错且返回结构正确
+  const LOCAL_FAILING = [
+    ['dcs_audit_script', { text: 'rm -rf /', type: 'shell' }],
+    ['dcs_plan', { title: 'x' }],
+    ['dcs_atlas', { section: 'regions' }],
+  ];
+  const problems = [];
+  for (const [name, args] of LOCAL_FAILING) {
+    const t = state.tools.find((x) => x.name === name);
+    if (!t) continue;
+    let r;
+    try {
+      r = await t.execute(args, {
+        signal: undefined, sessionId: '', workspace: process.cwd(), arguments: {},
+      });
+    } catch (e) {
+      problems.push(`${name}: 抛错而非返回结构化错误 → ${e.message}`);
+      continue;
+    }
+    if (!r || typeof r !== 'object') { problems.push(`${name}: 未返回对象`); continue; }
+    if (typeof r.ok !== 'boolean') problems.push(`${name}: 缺少 ok 布尔字段`);
+    const errType = t.output.schema.properties.error.type;
+    if (errType === 'string' && r.error !== undefined && typeof r.error !== 'string') {
+      problems.push(`${name}: error 应为字符串，实际 ${typeof r.error}`);
+    }
+  }
+  assertEqual(problems.length, 0, problems.join('; '));
+});
+
 // ---------------------------------------------------------------- 客户端半
 
 test('integration', 'client/loads-in-moduleloader', '客户端半可在模拟 __ModuleLoader__ 环境中装载', async () => {
