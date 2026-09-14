@@ -347,6 +347,40 @@ function minimalArgs(t) {
   return args;
 }
 
+test('integration', 'load/presenters-soft-validate', 'presentCall/presentResult 对非法参数返回 undefined 而非抛错', async () => {
+  // dsh 契约：presenter 会先软校验参数，非法即返回 undefined（回退通用卡片），
+  // 由 defineTool 包一层实现。插件必须能容忍该行为（不得假设返回对象）。
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+
+  const problems = [];
+  for (const t of state.tools) {
+    if (typeof t.presentCall === 'function') {
+      // 非法参数（缺必填 / 类型错）不应抛错
+      try {
+        const v = t.presentCall({ __nonexistent__: 1 });
+        if (v !== undefined) {
+          assert(v && typeof v === 'object', `${t.name}.presentCall 应返回对象或 undefined`);
+        }
+      } catch (e) {
+        problems.push(`${t.name}.presentCall: ${e.message}`);
+      }
+    }
+    if (typeof t.presentResult === 'function') {
+      try {
+        const v = t.presentResult({ __nonexistent__: 1 }, { content: [], isError: false });
+        if (v !== undefined) {
+          assert(v && typeof v === 'object', `${t.name}.presentResult 应返回对象或 undefined`);
+        }
+      } catch (e) {
+        problems.push(`${t.name}.presentResult: ${e.message}`);
+      }
+    }
+  }
+  assertEqual(problems.length, 0, `${problems.length} 个 presenter 在非法参数上抛错`, problems);
+});
+
 test('integration', 'load/terminal-presenter-exit-code', '终端卡片从失败输出还原退出码徽章', async () => {
   const mod = await import(join(ROOT, 'lib', 'index.js'));
   const { ctx, state } = makeHostCtx();
