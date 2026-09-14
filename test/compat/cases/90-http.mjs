@@ -273,3 +273,92 @@ test('http', 'http/unknown-path-not-crash', '未知子路径返回错误响应�
   assert(res.out.ended, '未知路径应结束响应（否则 UI 一直等待）');
   assert(res.out.status >= 400, `未知路径应返回 4xx，实际 ${res.out.status}`);
 });
+
+
+// ---------------------------------------------------------------- 异常输入健壮性
+
+/** 用 mock req/res 调用一个 POST 路由。 */
+async function post(prefix, url, { method = 'POST', body, big = false } = {}) {
+  const { EventEmitter } = await import('node:events');
+  const req = new EventEmitter();
+  req.url = url; req.method = method; req.headers = {};
+  const state = { destroyed: false };
+  req.destroy = () => { state.destroyed = true; };
+  const res = {
+    status: null, body: '', ended: false,
+    writeHead(s) { this.status = s; return this; },
+    end(b) { this.body = b === undefined ? '' : String(b); this.ended = true; },
+    write(b) { this.body += String(b); return true; },
+    setHeader() {}, flushHeaders() {},
+  };
+  setTimeout(() => {
+    if (big) req.emit('data', Buffer.from(body));
+    else if (body !== undefined) req.emit('data', Buffer.from(body));
+    req.emit('end');
+  }, 0);
+  await prefix.handler(req, res);
+  return { res, state };
+}
+
+test('http', 'http/malformed-input-handled', 'POST 路由对非法输入返回结构化错误且不崩溃', async () => {
+  // 服务端路由接收**网络输入**，必须对畸形数据健壮：
+  // 不能抛错（会让连接挂起）、必须结束响应（否则 UI 一直转圈）、
+  // 且应返回结构化错误（便于前端提示）。
+  const routes = await setupRoutes();
+  const prefix = routes.find((r) => r.kind === 'prefix');
+  assert(prefix, '应注册前缀路由');
+
+  const URL_ = '/api/dcs-cloud/v2/project/approve-plan';
+  const cases = [
+    ['非法 JSON', { body: '{not json' }],
+    ['空 body', { body: '' }],
+    ['缺字段', { body: '{}' }],
+  ];
+  const problems = [];
+  for (const [label, opts] of cases) {
+    let out;
+    try {
+      out = await Promise.race([
+        post(prefix, URL_, opts),
+        new Promise((_, rj) => setTimeout(() => rj(new Error('超时 8s')), 8000)),
+      ]);
+    } catch (e) {
+      problems.push(`${label}: ${e.message}`);
+      continue;
+    }
+    if (!out.res.ended) problems.push(`${label}: 未结束响应（UI 会一直等待）`);
+    if (!(out.res.status >= 400 && out.res.status < 500)) {
+      problems.push(`${label}: 状态码应为 4xx，实际 ${out.res.status}`);
+    }
+  }
+  assertEqual(problems.length, 0, problems.join('; '));
+});
+
+test('http', 'http/body-size-cap-enforced', '超大请求体被上限拦截（防内存耗尽）', async () => {
+  // readBody 设了 1MB 上限并在超限时 req.destroy()。
+  // 若无上限，单个请求即可让进程占用大量内存。
+  const routes = await setupRoutes();
+  const prefix = routes.find((r) => r.kind === 'prefix');
+
+  const big = JSON.stringify({ projectId: 'X', sessionId: 's', padding: 'y'.repeat(2 * 1024 * 1024) });
+  const out = await Promise.race([
+    post(prefix, '/api/dcs-cloud/v2/project/approve-plan', { body: big, big: true }),
+    new Promise((_, rj) => setTimeout(() => rj(new Error('超时 8s')), 8000)),
+  ]);
+
+  assert(out.state.destroyed, '超过 1MB 的请求体应触发 req.destroy()（否则内存可被耗尽）');
+  assert(out.res.ended, '超限后仍应结束响应');
+  assert(out.res.status >= 400, `超限应返回 4xx，实际 ${out.res.status}`);
+});
+
+test('http', 'http/wrong-method-returns-404', '方法不匹配时返回 404 而非误处理', async () => {
+  // 用 GET 打只接受 POST 的路由：不应被当成有效请求处理。
+  const routes = await setupRoutes();
+  const prefix = routes.find((r) => r.kind === 'prefix');
+  const out = await Promise.race([
+    post(prefix, '/api/dcs-cloud/v2/project/approve-plan', { method: 'GET' }),
+    new Promise((_, rj) => setTimeout(() => rj(new Error('超时 8s')), 8000)),
+  ]);
+  assert(out.res.ended, '应结束响应');
+  assertEqual(out.res.status, 404, `方法不匹配应为 404，实际 ${out.res.status}`);
+});
