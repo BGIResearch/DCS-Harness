@@ -396,6 +396,50 @@ test('unit', 'audit/every-rule-has-triggering-sample', '每条审计规则都有
     `以下规则有定义但没有样本能触发（规则可能已失效或被写坏）:\n  ${uncovered.join('\n  ')}`);
 });
 
+test('unit', 'audit/realistic-scripts-no-false-positive', '真实生信脚本零 critical/high 误报（防告警疲劳）', async () => {
+  // 与「每条规则都有样本」互补的另一半：**精确率**。
+  // 误报会让用户对告警脱敏，最终忽略真正的 critical —— 与安全目标相悖。
+  // 本用例用 20 个贴近真实生信流程的脚本片段，要求 critical/high 误报为 0。
+  const { auditScript } = await mod('audit.js');
+
+  const shellSafe = [
+    '#!/bin/bash\nset -euo pipefail\nfastp -i in.fq -o out.fq\nbwa mem ref.fa out.fq | samtools sort -o a.bam',
+    '#!/bin/bash\nset -e\nbcftools view -v snps in.vcf > out.vcf',
+    '#!/bin/bash\nset -e\nmkdir -p $WORKDIR/out && cp data.bam $WORKDIR/out/',
+    '#!/bin/bash\nset -e\nrm -rf ./tmp_build && make',
+    '#!/bin/bash\nset -e\npython3 -c "import pandas as pd; print(pd.__version__)"',
+    '#!/bin/bash\nset -e\nsamtools index sample.bam',
+    '#!/bin/bash\nset -e\nfor f in *.bam; do samtools index "$f"; done',
+    '#!/bin/bash\nset -e\nwhile read -r s; do echo "$s"; done < samples.txt',
+    '#!/bin/bash\nset -e\ntar -xzf ref.tar.gz -C $WORKDIR/ref',
+    '#!/bin/bash\nset -e\ncurl -o ref.fa https://example.com/ref.fa',
+    '#!/bin/bash\nset -e\ndd if=input.bin of=output.bin bs=1M',
+    '#!/bin/bash\nset -e\nfind /data -name "*.bam" | wc -l',
+    '#!/bin/bash\nset -e\nchmod +x script.sh',
+    '#!/bin/bash\nset -e\ntruncate -s 0 $WORKDIR/app.log',
+    '#!/bin/bash\nset -e\nrm -rf $WORKDIR/$SAMPLE/tmp',
+  ];
+  const pySafe = [
+    'import os\nprint(os.getcwd())',
+    'import subprocess\nsubprocess.run(["samtools","index","a.bam"], check=True)',
+    'import yaml\ncfg = yaml.safe_load(open("c.yml"))',
+    'import json\nprint(json.dumps({"a": 1}))',
+    'import pandas as pd\ndf = pd.read_csv("x.csv")',
+  ];
+
+  const noise = [];
+  for (const s of shellSafe) {
+    const f = auditScript(s, 'shell').findings.filter((x) => ['critical', 'high'].includes(x.severity));
+    if (f.length) noise.push(`shell ${JSON.stringify(s.split('\n')[2] || s.slice(0, 40))} → ${f.map((x) => x.message.slice(0, 26)).join(' | ')}`);
+  }
+  for (const s of pySafe) {
+    const f = auditScript(s, 'python').findings.filter((x) => ['critical', 'high'].includes(x.severity));
+    if (f.length) noise.push(`python ${JSON.stringify(s.split('\n')[0])} → ${f.map((x) => x.message.slice(0, 26)).join(' | ')}`);
+  }
+  assertEqual(noise.length, 0,
+    `以下真实脚本片段被误报为 critical/high（会造成告警疲劳）:\n  ${noise.join('\n  ')}`);
+});
+
 // ---------------------------------------------------------------- plan
 
 test('unit', 'plan/generates-markdown-file', 'generatePlan 写出含标题与步骤的 Markdown 文件', async () => {
