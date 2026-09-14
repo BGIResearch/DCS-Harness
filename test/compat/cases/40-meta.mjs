@@ -211,6 +211,36 @@ test('meta', 'meta/exit-code-contract', '退出码契约：0=通过 / 1=有失�
     '配置错误必须与「有失败用例」区分（否则 CI 无法辨别是环境问题还是代码问题）');
 });
 
+test('meta', 'meta/json-output-is-pure', '--json 模式下 stdout 必须是纯 JSON（不加任何其它输出）', async () => {
+  // 教训：e2e 层的「跳过」提示曾用 console.log 写 stdout，
+  // 污染了 --json 输出 —— matrix.sh 与 CI 靠 JSON 报告判定，会被直接打断。
+  //
+  // 为避免递归启动整个测试套件（会超时），这里只跑一个**很窄的过滤**，
+  // 并显式限制超时。
+  const { execFileSync } = await import('node:child_process');
+  const { join: j } = await import('node:path');
+  const runner = j(ROOT, 'test', 'compat', 'run.mjs');
+
+  let out = '';
+  try {
+    out = execFileSync(process.execPath, [runner, '--json', '-k', 'meta/runner-reports-pass'], {
+      env: { ...process.env }, encoding: 'utf8', timeout: 40000, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    out = e.stdout || '';
+  }
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(out);
+  } catch {
+    const head = out.trim().split('\n').slice(0, 3).join(' / ');
+    throw new Error(`--json 的 stdout 不是合法 JSON（前几行: ${head}）`);
+  }
+  assert(parsed && typeof parsed.total === 'number', 'JSON 报告应含 total 字段');
+  assert(/^\s*\{/.test(out), 'stdout 应以 { 开头（不得有前置日志）');
+});
+
 // ---------------------------------------------------------------- 覆盖完整性
 
 test('meta', 'meta/layers-cover-platform-surface', '四层用例均非空（无空跑层次）', async () => {

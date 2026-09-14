@@ -34,7 +34,10 @@ function preflight() {
 }
 
 const SKIP = preflight();
-const skipMsg = (what) => `\n       ⏭ 跳过真实调用（${SKIP}）：${what}`;
+// 注意：必须写 stderr —— 写 stdout 会污染 --json 模式的机器可读输出
+// （matrix.sh 与 CI 都靠 JSON 报告判定，曾被此问题打断）。
+const skipMsg = (what) => process.stderr.write(
+  `       ⏭ 跳过真实调用（${SKIP}）：${what}\n`);
 
 /** 无副作用地运行一条 dcs 命令。 */
 async function runDcs(args, timeoutMs = 60000) {
@@ -46,7 +49,7 @@ async function runDcs(args, timeoutMs = 60000) {
 // ---------------------------------------------------------------- 连接
 
 test('e2e', 'e2e/login-status', '真实 dcs status 可返回登录态', async () => {
-  if (SKIP) { console.log(skipMsg('dcs status')); return; }
+  if (SKIP) { skipMsg('dcs status'); return; }
   const { dcsStatus } = await import(join(ROOT, 'lib', 'dcs-client.js'));
   const { loadCfg } = await import(join(ROOT, 'lib', 'dcs-client.js'));
   const st = await dcsStatus(loadCfg(), { timeoutMs: 30000 });
@@ -56,7 +59,7 @@ test('e2e', 'e2e/login-status', '真实 dcs status 可返回登录态', async ()
 });
 
 test('e2e', 'e2e/binary-resolvable', '真实环境下 dcs 二进制可解析', async () => {
-  if (SKIP) { console.log(skipMsg('resolveDcsBinary')); return; }
+  if (SKIP) { skipMsg('resolveDcsBinary'); return; }
   const { loadCfg, resolveDcsBinary } = await import(join(ROOT, 'lib', 'dcs-client.js'));
   const p = await resolveDcsBinary(loadCfg());
   const path = typeof p === 'string' ? p : (p && p.path);
@@ -120,7 +123,7 @@ test('e2e', 'e2e/dcs-command-surface-exists', '插件调用的每个 dcs 子命�
     bin = typeof p === 'string' ? p : (p && p.path);
   } catch { /* 见下 */ }
   if (!bin) {
-    console.log(skipMsg(`校验 ${cmds.size} 个 dcs 子命令（dcs 二进制不可得）`));
+    skipMsg(`校验 ${cmds.size} 个 dcs 子命令（dcs 二进制不可得）`);
     return;
   }
 
@@ -156,7 +159,7 @@ test('e2e', 'e2e/dcs-command-surface-exists', '插件调用的每个 dcs 子命�
     `以下 dcs 子命令在 CLI 中不存在（插件会静默失效）: ${missing.join(', ')}`);
 });
 test('e2e', 'e2e/task-status-list', '只读：可列出分析任务', async () => {
-  if (SKIP) { console.log(skipMsg('任务列表')); return; }
+  if (SKIP) { skipMsg('任务列表'); return; }
   const r = await runDcs(['analysis', 'ls']);
   assert(r, '应返回结果对象');
   assert(r.ok === true || r.data !== undefined,
