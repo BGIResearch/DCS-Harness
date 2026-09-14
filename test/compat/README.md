@@ -129,6 +129,34 @@ node test/compat/run.mjs -l contract
 # 4. 全绿后提交
 ```
 
+## 多版本兼容性矩阵
+
+```bash
+bash test/compat/matrix.sh          # 或 npm run test:matrix
+```
+
+对多个已安装的 dsh 版本分别跑全量测试，一次给出兼容性结论：
+
+```
+dsh 版本         结果         说明
+------------------ -------------- ------------------------------
+0.1.5-alpha.1     ✔ 99/99      dsh-tools 0.1.5-rc.2
+0.1.5-rc.1        ✔ 99/99      dsh-tools 0.1.5-rc.2
+0.1.5-rc.2        ✔ 99/99      dsh-tools 0.1.5-rc.2
+✔ 全部被测 dsh 版本均兼容
+```
+
+**准备多个版本**（脚本不自动安装，避免副作用）：
+
+```bash
+mkdir -p /tmp/dsh-rc2 && cd /tmp/dsh-rc2 && npm init -y
+npm i @deepseek-ai/dsh@0.1.5-rc.2
+DSH_ROOTS=/tmp/dsh-rc2/node_modules bash test/compat/matrix.sh
+```
+
+**当前实测结论**：`dsh-dcs-cloud` v2.16.0 在 **0.1.5-alpha.1 / 0.1.5-rc.1 / 0.1.5-rc.2**
+三个版本上均 **99/99 通过**。
+
 ## 环境变量
 
 | 变量 | 说明 |

@@ -52,7 +52,8 @@
     "test:lifecycle": "node test/compat/run.mjs -l lifecycle",
     "test:upgrade": "node test/compat/run.mjs -l upgrade",
     "test:frozen": "node test/compat/run.mjs -l frozen",
-    "test:meta": "node test/compat/run.mjs -l meta"
+    "test:meta": "node test/compat/run.mjs -l meta",
+    "test:matrix": "bash test/compat/matrix.sh"
   },
   "dependencies": {},
   "dsh": {
