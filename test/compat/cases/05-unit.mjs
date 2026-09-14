@@ -250,6 +250,56 @@ test('unit', 'audit/findings-shape', 'audit findings 结构统一（severity/mes
   }
 });
 
+test('unit', 'audit/wdl-type-detection', 'audit 能识别 WDL 类型', async () => {
+  const { auditScript } = await mod('audit.js');
+  // WDL 自动识别：含 version 1.0 + workflow/task，或含 command { 块
+  const wdlSamples = [
+    'version 1.0\nworkflow Foo { call Bar { input: x = 1 } }',
+    'task T {\n  command { echo hi }\n}',
+  ];
+  for (const text of wdlSamples) {
+    const r = auditScript(text, 'auto');
+    assertEqual(r.language, 'wdl', `应识别为 wdl，实际 ${r.language}（文本: ${text.slice(0, 30)}）`);
+  }
+});
+
+test('unit', 'audit/wdl-flags-container-image', 'audit 提示 WDL 的容器镜像引用', async () => {
+  // 真实缺陷（本轮发现）：原正则用 [a-z]+/ 匹配 registry 段，
+  // 无法处理含连字符/点的 registry —— 而插件文档**反复推荐**的镜像格式
+  // 恰是 `public-library/<镜像名>:latest`（含连字符），于是这最该提示的形态被静默漏掉。
+  const { auditScript } = await mod('audit.js');
+  const shouldFlag = [
+    'docker: "public-library/saw:latest"',      // 插件文档推荐的格式
+    'docker: "registry.example.com/img:1.0"',   // 含点的私有 registry
+    'docker: "biocontainers/samtools:1.17"',
+  ];
+  const missed = shouldFlag.filter((t) => {
+    const r = auditScript(t, 'wdl');
+    return !r.findings.some((f) => /镜像/.test(f.message));
+  });
+  assertEqual(missed.length, 0,
+    `以下含镜像引用的 WDL 片段未被提示（可能导致投递时才发现镜像不可用）: ${missed.join('; ')}`);
+});
+
+test('unit', 'audit/wdl-flags-resources', 'audit 提示 WDL 的资源声明', async () => {
+  const { auditScript } = await mod('audit.js');
+  const cases = ['cpu: 8', 'memory: "32 GB"', 'memory: 16GB'];
+  const missed = cases.filter((t) => {
+    const r = auditScript(t, 'wdl');
+    return !r.findings.some((f) => /资源/.test(f.message));
+  });
+  assertEqual(missed.length, 0, `以下资源声明未被提示: ${missed.join('; ')}`);
+});
+
+test('unit', 'audit/wdl-no-false-positive-on-plain', '纯 WDL 逻辑不误报镜像/资源', async () => {
+  const { auditScript } = await mod('audit.js');
+  // 不含 docker: 与 cpu/memory 声明的普通 WDL 不应产生这几类提示
+  const plain = 'version 1.0\nworkflow W {\n  call T { input: x = 1 }\n}';
+  const r = auditScript(plain, 'wdl');
+  const noise = r.findings.filter((f) => /镜像|资源/.test(f.message));
+  assertEqual(noise.length, 0, `普通 WDL 被误报: ${noise.map((f) => f.message).join('; ')}`);
+});
+
 // ---------------------------------------------------------------- plan
 
 test('unit', 'plan/generates-markdown-file', 'generatePlan 写出含标题与步骤的 Markdown 文件', async () => {
