@@ -138,3 +138,127 @@ test('http', 'http/stream-route-is-exact', 'SSE 流式路由使用 exact（避�
   assertEqual(m[1], 'exact',
     `流式路由 ${m[2]} 应为 exact，实际 ${m[1]}（前缀会吞掉同级路由）`);
 });
+
+
+// ---------------------------------------------------------------- 真实调用 handler
+
+/** 用 mock req/res 真实调用服务端路由（只测不依赖外部网络的端点）。 */
+async function setupRoutes() {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const routes = [];
+  const ctx = {
+    tools: { register: () => () => {} },
+    systemPrompt: { section: () => () => {} },
+    webServer: {
+      register: (r) => { routes.push(r); return () => {}; },
+      registerUpgrade: () => () => {}, registerFallback: () => () => {}, tapIndex: () => () => {},
+    },
+    sessions: { get: () => null }, tokenMeter: {}, sessionPersistence: {},
+    get: () => undefined, effect: (f) => (typeof f === 'function' ? f() : undefined),
+    on: () => () => {}, logger: { debug() {}, info() {}, warn() {}, error() {} },
+  };
+  await mod.apply(ctx);
+  return routes;
+}
+
+function mockRes() {
+  const out = { status: null, headers: null, body: '', ended: false };
+  return {
+    out,
+    writeHead(status, headers) { out.status = status; out.headers = headers || {}; return this; },
+    end(b) { out.body = b === undefined ? '' : String(b); out.ended = true; },
+    write(b) { out.body += String(b); return true; },
+    setHeader() {}, flushHeaders() {}, destroy() {},
+  };
+}
+
+test('http', 'http/local-endpoints-respond', '本地端点真实响应且返回合法 JSON', async () => {
+  // 这些端点不依赖外部网络，可以直接用 mock req/res 调用 handler，
+  // 验证「路由注册了」之外的**真实响应行为**（状态码 + JSON 结构）。
+  const { EventEmitter } = await import('node:events');
+  const routes = await setupRoutes();
+  const prefix = routes.find((r) => r.kind === 'prefix');
+  assert(prefix, '应注册 /api/dcs-cloud 前缀路由');
+
+  // 端点分两类：
+  //  - 纯本地（/v2/health）：不碰网络，必须快速且稳定
+  //  - 会探测 dcs 状态（/v2/regions、/config）：内部 await dcsStatus（真实 CLI，
+  //    最坏 30s 超时）。这类端点同样值得验证「能返回合法 JSON」，
+  //    但给更宽松的超时，并在超时时明确跳过（视为环境限制而非不兼容）。
+  const PURE_LOCAL = ['/v2/health'];
+  const PROBES_DCS = ['/v2/regions'];
+  const problems = [];
+  const skipped = [];
+
+  for (const path of [...PURE_LOCAL, ...PROBES_DCS]) {
+    const budget = PURE_LOCAL.includes(path) ? 5000 : 35000;
+    const r = new EventEmitter();
+    r.url = '/api/dcs-cloud' + path; r.method = 'GET'; r.headers = {}; r.destroy = () => {};
+    setTimeout(() => r.emit('end'), 0);
+    const res = mockRes();
+
+    try {
+      await Promise.race([
+        prefix.handler(r, res),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`超时 ${budget / 1000}s`)), budget)),
+      ]);
+    } catch (e) {
+      // 探测 dcs 的端点在无网络/未登录环境下超时属环境限制，不计为失败
+      if (PROBES_DCS.includes(path) && /超时/.test(e.message)) { skipped.push(path); continue; }
+      problems.push(`${path}: handler 抛错/超时 → ${e.message}`);
+      continue;
+    }
+    if (res.out.status !== 200) { problems.push(`${path}: 状态码 ${res.out.status}（应为 200）`); continue; }
+    let parsed;
+    try { parsed = JSON.parse(res.out.body); }
+    catch { problems.push(`${path}: 响应不是合法 JSON → ${String(res.out.body).slice(0, 80)}`); continue; }
+    if (!parsed || parsed.ok !== true) {
+      problems.push(`${path}: 响应缺少 ok:true → ${JSON.stringify(parsed).slice(0, 80)}`);
+    }
+    if (!res.out.headers || !/json/i.test(String((res.out.headers || {})['content-type']))) {
+      problems.push(`${path}: content-type 未声明 JSON → ${JSON.stringify(res.out.headers)}`);
+    }
+  }
+  assertEqual(problems.length, 0, problems.join('; '));
+  if (skipped.length > 0) {
+    process.stderr.write(`       ⏭ 跳过（环境限制）: ${skipped.join(', ')}\n`);
+  }
+});
+
+test('http', 'http/health-endpoint-shape', '/v2/health 返回版本与时间戳', async () => {
+  const routes = await setupRoutes();
+  const prefix = routes.find((r) => r.kind === 'prefix');
+  const { EventEmitter } = await import('node:events');
+  const r = new EventEmitter();
+  r.url = '/api/dcs-cloud/v2/health'; r.method = 'GET'; r.headers = {}; r.destroy = () => {};
+  setTimeout(() => r.emit('end'), 0);
+  const res = mockRes();
+  await prefix.handler(r, res);
+
+  const body = JSON.parse(res.out.body);
+  assertEqual(body.ok, true, 'health 应返回 ok:true');
+  assert(/^\d+\.\d+\.\d+/.test(String(body.version)),
+    `health 应返回插件版本，实际 ${body.version}`);
+  assert(Number.isFinite(body.time), `health 应返回时间戳，实际 ${body.time}`);
+});
+
+test('http', 'http/unknown-path-not-crash', '未知子路径返回错误响应而非崩溃', async () => {
+  // 前缀路由会收到任意子路径。未知路径必须给出结构化错误，
+  // 不能让异常冒泡导致连接挂起（UI 会一直转圈）。
+  const routes = await setupRoutes();
+  const prefix = routes.find((r) => r.kind === 'prefix');
+  const { EventEmitter } = await import('node:events');
+  const r = new EventEmitter();
+  r.url = '/api/dcs-cloud/__definitely_not_a_route__'; r.method = 'GET';
+  r.headers = {}; r.destroy = () => {};
+  setTimeout(() => r.emit('end'), 0);
+  const res = mockRes();
+
+  await Promise.race([
+    prefix.handler(r, res),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('超时 8s')), 8000)),
+  ]).catch((e) => { throw new Error(`未知路径应返回错误响应，实际: ${e.message}`); });
+
+  assert(res.out.ended, '未知路径应结束响应（否则 UI 一直等待）');
+  assert(res.out.status >= 400, `未知路径应返回 4xx，实际 ${res.out.status}`);
+});
