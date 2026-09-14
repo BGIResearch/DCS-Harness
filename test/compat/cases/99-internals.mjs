@@ -495,6 +495,62 @@ test('internals', 'internals/taskTerms-handles-garbage', 'taskTerms 对异常输
   }
 });
 
+// ---------------------------------------------------------------- 资源规格归一化
+
+test('internals', 'internals/normalize-resource-formats', '资源规格归一化覆盖文档承诺的全部写法', async () => {
+  // 插件在 systemPrompt 与工具描述里承诺接受 `vf=32g,num_proc=8` 与
+  // 「4c 16g」等自然写法（"插件本地校验并自动转换"）。
+  // 若归一化漏掉某种写法，投递时才会报错，且错误信息指向后端、难以归因。
+  const src = readFileSync(join(ROOT, 'lib', 'index.js'), 'utf8');
+  const DCS_RESOURCE_RE = /^vf=[\d.]+g,num_proc=\d+(,gpu=.+)?$/;
+  const norm = extractFunction('normalizeDcsResource');
+
+  const cases = [
+    ['vf=16g,num_proc=4', 'vf=16g,num_proc=4', '标准格式原样'],
+    ['VF=32G,NUM_PROC=8', 'vf=32g,num_proc=8', '大写应归一为小写'],
+    ['4c 16g', 'vf=16g,num_proc=4', '「核 内存」写法'],
+    ['8核32G', 'vf=32g,num_proc=8', '中文「核」写法'],
+    ['16g 4c', 'vf=16g,num_proc=4', '「内存 核」反序写法'],
+    ['', 'vf=16g,num_proc=4', '空值应给默认'],
+    ['vf=16g,num_proc=4,gpu=L4', 'vf=16g,num_proc=4,gpu=l4', '带 GPU'],
+  ];
+  const problems = [];
+  for (const [input, want, label] of cases) {
+    const got = norm(input);
+    if (got !== want) problems.push(`${label}: ${JSON.stringify(input)} → ${JSON.stringify(got)}（期望 ${want}）`);
+  }
+  assertEqual(problems.length, 0, `资源归一化不符合预期:\n  ${problems.join('\n  ')}`);
+
+  // 归一化结果必须能通过 DCS 的格式校验（否则投递必失败）
+  const invalid = cases.map(([i]) => norm(i)).filter((v) => !DCS_RESOURCE_RE.test(v));
+  assertEqual(invalid.length, 0,
+    `归一化结果未通过格式校验: ${invalid.join(', ')}`);
+});
+
+test('internals', 'internals/check-resource-rejects-garbage', '非法资源规格被拒绝并给出可操作提示', async () => {
+  const src = readFileSync(join(ROOT, 'lib', 'index.js'), 'utf8');
+  const DCS_RESOURCE_RE = /^vf=[\d.]+g,num_proc=\d+(,gpu=.+)?$/;
+  const norm = extractFunction('normalizeDcsResource');
+  const check = extractFunction('checkDcsResource', {
+    normalizeDcsResource: norm,
+    DCS_RESOURCE_RE,
+  });
+
+  // 合法：返回 { value }
+  for (const ok of ['vf=16g,num_proc=4', '4c 16g', '8核32G']) {
+    const r = check(ok);
+    assert(!r.error, `合法资源 ${JSON.stringify(ok)} 不应被拒绝: ${JSON.stringify(r)}`);
+    assert(DCS_RESOURCE_RE.test(r.value), `返回值应合法: ${r.value}`);
+  }
+
+  // 非法：返回 { error }，且错误信息应说明正确格式（可操作）
+  for (const bad of ['垃圾输入', 'vf=x', 'abc', '16', 'c g']) {
+    const r = check(bad);
+    assert(r.error, `非法资源 ${JSON.stringify(bad)} 应被拒绝`);
+    assertIncludes(r.error, 'vf=', `错误信息应给出正确格式示例: ${r.error}`);
+  }
+});
+
 // ---------------------------------------------------------------- 抽取机制自检
 
 test('internals', 'internals/extraction-mechanism-works', '函数抽取机制本身有效（防静默空转）', async () => {
