@@ -4,9 +4,10 @@
 |---|---|
 | 被测插件 | `dsh-dcs-cloud` v2.15.0 |
 | 目标平台 | **dsh 0.1.5-rc.1**（运行中） / dsh-tools 0.1.5-rc.2 |
-| 测试模块 | `test/compat`（零依赖 ESM，93 例，七层） |
-| 结论 | ✅ **兼容**（99/99 通过，耗时 ~0.23s） |
-| 多版本实测 | ✅ **0.1.5-alpha.1 / 0.1.5-rc.1 / 0.1.5-rc.2 均 99/99 通过** |
+| 测试模块 | `test/compat`（零依赖 ESM，109 例，八层） |
+| 结论 | ✅ **兼容**（109/109 通过，耗时 ~0.34s） |
+| 多版本实测 | ✅ **0.1.5-alpha.1 / 0.1.5-rc.1 / 0.1.5-rc.2 均 109/109 通过** |
+| dcs CLI 实测 | ✅ **22 个插件调用的 dcs 子命令全部存在**（真实 CLI 校验） |
 | 修复缺陷 | 2 处真实缺陷（1 处安全影响、1 处客户端装载） |
 
 ```bash
@@ -26,7 +27,8 @@ npm run test:contract   # 只看平台契约
 | `lifecycle` | 20/20 | 配置/任务库/项目库生命周期、权限、幂等 |
 | `upgrade` | 8/8 | 会话格式迁移链演练（升级/降级/损坏三方向） |
 | `frozen` | 5/5 | 冻结参数不可变性（历史 readonly bug 防复发） |
-| `meta` | 11/11 | 测试自身有效性（变异测试、假绿守卫、退出码契约） |
+| `e2e` | 5/5 | 真实 dcs CLI 调用（默认跳过） + **命令面存在性（默认运行）** |
+| `meta` | 12/12 | 测试自身有效性（变异测试、假绿守卫、退出码契约、JSON 纯净性） |
 
 ---
 
@@ -220,6 +222,30 @@ dsh 版本         结果         说明
 
 **意义**：这直接证明了本模块的核心价值 —— 换一个 dsh 版本，一条命令即可给出
 明确的兼容性结论；且插件在 rc 迭代的多个版本上都稳定兼容。
+
+---
+
+## 五·补二、dcs CLI 命令面校验（实测）
+
+除 dsh 平台契约外，还有一个易忽视的兼容性维度：**dcs CLI 自身升级**也会让命令改名/移除，
+插件会**静默失效**（调用报错但没有任何编译期提示）。
+
+`e2e/dcs-command-surface-exists`（默认运行，只需 dcs 二进制）从插件源码抽取全部构造的
+ds 子命令，逐个比对 CLI 真实子命令表：
+
+```
+实测 22 个命令全部存在：
+analysis consume/info/ls · billing ls · project create/detail/switch
+region current/switch · terminal download/exec/open
+data download/find/info/ls/push/upload
+workflow check_parameter/info/ls/plan/run/task_info/task_log/tasks
+```
+
+**实现要点**（两处都曾导致校验完全失效，靠变异测试发现）：
+1. 不能用 `<cmd> --help` 判断子命令存在 —— dcs 对未知子命令**静默打印父命令帮助并退出 0**；
+   须解析父命令帮助的 `Available Commands` 表。
+2. 不能笼统匹配 `['x','y']` —— schema 里的 `enum: ['analysis','workflow']` 会被误当命令；
+   须逐行扫描 + 跟踪 schema 块深度 + 排除 enum。
 
 ---
 
