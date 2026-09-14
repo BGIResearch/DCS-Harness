@@ -448,3 +448,49 @@ test('client-render', 'render/markdown-keeps-formatting', '客户端 Markdown �
   assert(/<a[^>]*href="https:\/\/example\.com"/.test(html), '正常 https 链接应渲染为 <a>');
   assertIncludes(html, '<li>', '列表应保留');
 });
+
+
+test('client-render', 'render/delivery-content-is-xss-safe-end-to-end', '交付内容端到端防注入（存储 → 渲染）', async () => {
+  // 前面的用例只测渲染函数本身。本用例走**真实数据路径**：
+  // 把含注入的交付内容存进项目库 → 取出 → 经客户端 mdToHtml 渲染。
+  // 交付内容由 agent 撰写，会夹带上游数据/文件名/DCS 返回文本 ——
+  // 这是最可能被注入的入口。
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const prev = process.env.DSH_HOME;
+  const home = mkdtempSync(join(tmpdir(), 'xss-e2e-'));
+  process.env.DSH_HOME = home;
+
+  try {
+    const projects = await import(join(ROOT, 'lib', 'projects.js') + `?e2e=${Date.now()}`);
+    await projects.upsertProject({ project_id: 'X', title: 'T' }, 's');
+
+    const PAYLOAD = [
+      '## 结果',
+      '<script>alert(document.cookie)</script>',
+      '<img src=x onerror=alert(1)>',
+      '[x](javascript:alert(1))',
+    ].join('\n');
+    await projects.updateDelivery('X', { sections: { findings: PAYLOAD } }, 's');
+
+    // 1) 存储层应**原样保留**（渲染期才转义；此处不得篡改用户内容）
+    const stored = projects.getProject('X').delivery.sections.findings;
+    assertIncludes(stored, '<script>', '存储层应保留原文（转义发生在渲染期）');
+
+    // 2) 渲染后不得含可执行脚本 / 危险链接
+    const { components } = extractInternalComponents(['mdToHtml']);
+    const html = components.mdToHtml(stored);
+
+    assert(!/<script[^>]*>alert/i.test(html), '渲染后出现了可执行 <script>（XSS）');
+    assert(!/<img[^>]*onerror=/i.test(html), '渲染后出现了 onerror 注入');
+    assert(!/<a[^>]*href="\s*(?:javascript|data):/i.test(html), '渲染后出现了危险协议链接');
+
+    // 3) 内容仍可读（转义而非丢弃）
+    assertIncludes(html, 'alert(document.cookie)', '原始文本应仍可见（不应静默删除内容）');
+    assertIncludes(html, '&lt;script&gt;', 'HTML 应被转义为实体');
+  } finally {
+    if (prev === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = prev;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
