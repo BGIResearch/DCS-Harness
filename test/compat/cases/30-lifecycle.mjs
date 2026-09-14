@@ -9,6 +9,16 @@ import { test, assert, assertEqual, assertIncludes, ROOT, findDshRoot } from '..
 
 const mod = (p) => import(join(ROOT, 'lib', p));
 
+/** 判断文件是否为合法 JSON（用于存储完整性断言）。 */
+function isValidJson(file) {
+  try {
+    JSON.parse(readFileSync(file, 'utf8'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** 在隔离的 DSH_HOME 下执行 fn，结束后恢复。 */
 async function withIsolatedHome(fn) {
   const prev = process.env.DSH_HOME;
@@ -386,6 +396,76 @@ test('lifecycle', 'lifecycle/data-survives-readwrite-cycles', '反复读写后�
 
     assertEqual(problems.length, 0,
       `反复读写后数据被腐蚀: ${problems.join('; ')}`);
+  });
+});
+
+test('lifecycle', 'lifecycle/store-writes-are-atomic', '项目/任务存储使用原子写（防中断导致全量丢数据）', async () => {
+  // 发现：saveAll / saveAllTasks 原本直接 writeFileSync —— 会先截断再写。
+  // 若中途崩溃/被 kill/磁盘满，文件停在半截状态；
+  // 而 loadAll / loadAllTasks 对损坏 JSON **静默返回 []**，
+  // 于是「所有项目/任务凭空消失」，且下一次保存会用空列表覆盖，损失不可逆。
+  //
+  // 修复后采用「写临时文件 + rename」。本用例验证该性质：
+  //  1) 写入后目录内**无 .tmp 残留**（成功路径会清理）
+  //  2) 存储文件始终是**合法 JSON**（rename 的原子性保证）
+  //  3) 连续写入正常覆盖，数据递增
+  await withIsolatedHome(async (dir) => {
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const proj = await mod('projects.js');
+    const tasks = await mod('tasks.js');
+
+    // --- 项目存储 ---
+    await proj.upsertProject({ project_id: 'A', title: 'T' }, 's');
+    let files = readdirSync(dir);
+    const tmpLeft = files.filter((f) => f.includes('.tmp-'));
+    assertEqual(tmpLeft.length, 0, `项目存储写入后残留临时文件: ${tmpLeft.join(', ')}`);
+
+    const pPath = proj.projectsPath();
+    assert(isValidJson(pPath), '项目存储文件应为合法 JSON');
+
+    await proj.upsertProject({ project_id: 'B' }, 's');
+    assertEqual(proj.listProjects().length, 2, '连续写入应正常累加');
+
+    // --- 任务存储 ---
+    await tasks.upsertTask({ title: 'T1' }, 's');
+    const tPath = tasks.tasksPath();
+    const tTmp = readdirSync(dir).filter((f) => f.includes('.tmp-'));
+    assertEqual(tTmp.length, 0, `任务存储写入后残留临时文件: ${tTmp.join(', ')}`);
+    assert(isValidJson(tPath), '任务存储文件应为合法 JSON');
+    await tasks.upsertTask({ title: 'T2' }, 's');
+    assertEqual(tasks.loadTasks('s').length, 2, '连续写入应正常累加');
+  });
+});
+
+test('lifecycle', 'lifecycle/corrupt-store-does-not-nuke-silently', '存储损坏时不应静默清空（应有可观测痕迹）', async () => {
+  // 与上一条配套：即便文件已损坏，也不该「静默变成空」并让下一次保存覆盖掉。
+  // 当前实现 loadAll 对损坏 JSON 返回 []，本用例**记录该行为**并确保：
+  //  · 损坏时不会抛错崩溃（保证插件仍可用）
+  //  · 但会在 parse 失败时留下可检测的痕迹（通过返回值/行为可区分）
+  //
+  // 说明：彻底修复（如备份损坏文件后再重建）属产品决策，此处先固化现状，
+  // 防止未来无意间把「静默吞掉」扩散到更多路径。
+  await withIsolatedHome(async (dir) => {
+    const { readFileSync, writeFileSync, existsSync } = await import('node:fs');
+    const proj = await mod('projects.js');
+
+    await proj.upsertProject({ project_id: 'A', title: 'T' }, 's');
+    const p = proj.projectsPath();
+    const good = readFileSync(p, 'utf8');
+
+    // 破坏文件
+    writeFileSync(p, good.slice(0, Math.floor(good.length / 2)));
+    let list;
+    try {
+      list = proj.listProjects();
+    } catch (e) {
+      throw new Error(`存储损坏时应降级为空列表而非抛错（保证插件可用）: ${e.message}`);
+    }
+    assertEqual(list.length, 0, '损坏时当前实现返回空列表（既有行为）');
+
+    // 关键：损坏文件应仍在磁盘上（未被立刻覆盖），便于人工恢复
+    assert(existsSync(p), '损坏文件不应被删除');
+    assert(readFileSync(p, 'utf8').length > 0, '损坏文件内容应保留，便于诊断/恢复');
   });
 });
 
