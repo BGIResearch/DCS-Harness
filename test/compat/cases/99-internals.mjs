@@ -376,6 +376,125 @@ test('internals', 'internals/sawEnvPrefix-modes', 'sawEnvPrefix 按配置返回�
   assertIncludes(dflt, '/opt/saw-8.2.2', '未指定 sawRoot 时应使用默认路径');
 });
 
+// ---------------------------------------------------------------- 文本提取
+
+test('internals', 'internals/textOf-joins-text-blocks', 'textOf 正确拼接文本块', async () => {
+  const textOf = extractFunction('textOf');
+  // 字符串直接返回
+  assertEqual(textOf('hello'), 'hello', '字符串应原样返回');
+  // 数组：只取 type==='text' 的块，用换行连接
+  assertEqual(textOf([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }]), 'a\nb',
+    '多个文本块应以换行连接');
+  // 非文本块（图像等）应被忽略。
+  // ⚠ 用例必须让非文本块**也带 text 字段** —— 否则「不过滤 type」的错误实现
+  // 也能通过（变异测试曾据此漏检）。
+  assertEqual(
+    textOf([{ type: 'image', data: 'x', text: 'SHOULD_BE_IGNORED' }, { type: 'text', text: 'c' }]),
+    'c',
+    '带 text 字段的非文本块也必须被忽略（否则会渲染出非文本块的内容）');
+  // 异常输入不应抛错
+  for (const bad of [null, undefined, 42, {}, []]) {
+    const out = textOf(bad);
+    assertEqual(typeof out, 'string', `textOf(${JSON.stringify(bad)}) 应返回字符串`);
+  }
+});
+
+test('internals', 'internals/termStdout-extracts-from-multiple-shapes', 'termStdout 兼容多种终端返回形态', async () => {
+  const termStdout = extractFunction('termStdout');
+  // 形态 1：data.stdout
+  assertEqual(termStdout({ data: { stdout: 'out1' } }), 'out1', '应读 data.stdout');
+  // 形态 2：data.output
+  assertEqual(termStdout({ data: { output: 'out2' } }), 'out2', '应读 data.output');
+  // 形态 3：data 为字符串
+  assertEqual(termStdout({ data: 'out3' }), 'out3', 'data 为字符串应直接返回');
+  // 形态 4：raw 是 JSON（含 data.stdout）
+  assertEqual(termStdout({ raw: JSON.stringify({ data: { stdout: 'out4' } }) }), 'out4',
+    '应从 raw JSON 中解析出 stdout');
+  // 形态 5：raw 非 JSON → 原样返回
+  assertEqual(termStdout({ raw: 'plain text' }), 'plain text', 'raw 非 JSON 应原样返回');
+  // 空输入
+  assertEqual(termStdout(null), '', 'null 应返回空串');
+  assertEqual(termStdout({}), '', '空对象应返回空串');
+});
+
+test('internals', 'internals/taskEvidenceText-caps-output', 'taskEvidenceText 截断到上限', async () => {
+  const taskEvidenceText = extractFunction('taskEvidenceText');
+  // 字符串截断
+  const long = 'x'.repeat(5000);
+  assertEqual(taskEvidenceText(long, 100).length, 100, '字符串应截断到 cap');
+  // 默认 cap 4000
+  assert(taskEvidenceText(long).length <= 4000, '默认 cap 应为 4000');
+  // 对象 → JSON 字符串
+  const obj = taskEvidenceText({ a: 1, b: [2, 3] });
+  assertIncludes(obj, '"a"', '对象应序列化为 JSON 文本');
+  // 空输入返回空串（而非 "null" / "undefined"）
+  for (const bad of [null, undefined]) {
+    assertEqual(taskEvidenceText(bad), '', `taskEvidenceText(${bad}) 应返回空串`);
+  }
+});
+
+// ---------------------------------------------------------------- 术语抽取与打分
+
+test('internals', 'internals/scoreText-weights-long-terms', 'scoreText 对长术语加权', async () => {
+  const scoreText = extractFunction('scoreText');
+  // 长词（>=4 字符）权重 2，短词权重 1
+  assertEqual(scoreText(['abcd'], 'xx abcd xx'), 2, '4 字符词应计 2 分');
+  assertEqual(scoreText(['ab'], 'xx ab xx'), 1, '2 字符词应计 1 分');
+  assertEqual(scoreText(['abcd', 'ab'], 'abcd ab'), 3, '应累加');
+  assertEqual(scoreText(['zzz'], 'nothing here'), 0, '未命中应为 0');
+  assertEqual(scoreText([], 'anything'), 0, '空术语表应为 0');
+  // 大小写不敏感（内部会 toLowerCase）
+  assertEqual(scoreText(['abcd'], 'ABCD'), 2, '应大小写不敏感');
+});
+
+test('internals', 'internals/taskTerms-tokenizes-cjk-and-ascii', 'taskTerms 按设计抽取中英文术语', async () => {
+  const kwHits = (text, kw) => String(text).includes(String(kw));
+  const CN_EN_BIO_TERMS = { '单细胞': ['scrna', 'single-cell'], '时空': ['stereo', 'spatial'] };
+  const KEYWORD_TO_CATEGORY = [{ category: 'scrna', keywords: ['scrna', 'single-cell'] }];
+  const taskTerms = extractFunction('taskTerms', { CN_EN_BIO_TERMS, KEYWORD_TO_CATEGORY, kwHits });
+
+  const t = taskTerms('对单细胞数据做聚类分析 clustering');
+  assert(Array.isArray(t), '应返回数组');
+  assert(t.length > 0, '应抽取出术语（否则技能路由失效）');
+
+  // 英文：整词保留（len>=2）
+  assertIncludes(t, 'clustering', '应保留英文整词');
+
+  // 中文：设计上采用**双字滑窗 bigram**（而非分词），
+  // 因为无分词器时 bigram 能覆盖任意中文子串匹配。
+  // 注意：`[一-龥]+` 会把整句匹配为一个长 token，
+  // 长度 > 4 故不进 terms；但滑窗产出的 bigram 覆盖了「细胞」等核心片段。
+  assertIncludes(t, '细胞', '应产出中文 bigram（覆盖「细胞」等核心片段）');
+  assert(t.some((x) => x.length === 2 && /[\u4e00-\u9fa5]{2}/.test(x)),
+    `应含双字中文术语，实际: ${JSON.stringify(t)}`);
+
+  // 中→英扩充：CN_EN_BIO_TERMS 用**整句 includes** 命中（不依赖分词）
+  assertIncludes(t, 'scrna', '「单细胞」应扩充出英文术语 scrna');
+  assertIncludes(t, 'single-cell', '「单细胞」应扩充出 single-cell');
+
+  // 类别并入：命中类别关键词后并入类别名
+  assertIncludes(t, 'scrna', '应并入命中的类别名');
+
+  // 去重
+  assertEqual(new Set(t).size, t.length, `术语有重复: ${JSON.stringify(t)}`);
+  // 空输入
+  assertEqual(taskTerms('').length, 0, '空任务应返回空数组');
+  // 单字不收录（len>=2 才要）
+  assert(!taskTerms('a b').includes('a'), '单字符不应收录');
+});
+
+test('internals', 'internals/taskTerms-handles-garbage', 'taskTerms 对异常输入不抛错', async () => {
+  const kwHits = (text, kw) => String(text).includes(String(kw));
+  const taskTerms = extractFunction('taskTerms', {
+    CN_EN_BIO_TERMS: {}, KEYWORD_TO_CATEGORY: [], kwHits,
+  });
+  for (const bad of [null, undefined, 123, {}, []]) {
+    let out;
+    try { out = taskTerms(bad); } catch (e) { throw new Error(`taskTerms(${JSON.stringify(bad)}) 抛错: ${e.message}`); }
+    assert(Array.isArray(out), `taskTerms(${JSON.stringify(bad)}) 应返回数组`);
+  }
+});
+
 // ---------------------------------------------------------------- 抽取机制自检
 
 test('internals', 'internals/extraction-mechanism-works', '函数抽取机制本身有效（防静默空转）', async () => {
