@@ -240,26 +240,33 @@ test('meta', 'meta/static-check-covers-all-lib-modules', 'check-hooks 的语法�
     // 全部模块先原样拷入
     for (const f of modules) copyFileSync(join(libDir, f), join(dir, 'lib', f));
 
-    const missed = [];
+    // 性能：早期版本对每个模块各跑一次 check-hooks（9 次子进程 ≈ 2.2s）。
+    // 改为**一次性**给所有模块注入语法错误、只跑一次，再从输出里解析
+    // 实际报出的文件名集合 —— 同样能判定「哪些模块未被覆盖」，耗时降到 1/9。
+    const originals = new Map();
     for (const f of modules) {
       const target = join(dir, 'lib', f);
       const original = readFileSync(target, 'utf8');
-      writeFileSync(target, original + '\nfunction __broken_syntax( {\n', 'utf8');
-      let reported = false;
-      try {
-        execFileSync(process.execPath, [join(dir, 'scripts', 'check-hooks.cjs')], {
-          cwd: dir, stdio: 'pipe', env: { ...process.env, CHECK_ROOT: dir },
-        });
-      } catch (e) {
-        // ⚠ check-hooks 把错误写到 **stderr**（console.error），不是 stdout。
-        // 早期版本只读 e.stdout，导致所有模块都被误判为「未被覆盖」。
-        reported = String((e && e.stderr) || '').includes(f)
-          || String((e && e.stdout) || '').includes(f);
-      }
-      writeFileSync(target, original, 'utf8');
-      if (!reported) missed.push(f);
+      originals.set(f, original);
+      // 注入明确非法的代码（`const x = ;`）；注意部分形态在特定解析模式下不报错
+      writeFileSync(target, original + '\nconst __dsh_broken__ = ;\n', 'utf8');
     }
 
+    let output = '';
+    try {
+      execFileSync(process.execPath, [join(dir, 'scripts', 'check-hooks.cjs')], {
+        cwd: dir, stdio: 'pipe', env: { ...process.env, CHECK_ROOT: dir },
+      });
+    } catch (e) {
+      // 错误走 stderr（console.error），不是 stdout
+      output = String((e && e.stderr) || '') + String((e && e.stdout) || '');
+    }
+
+    for (const [f, original] of originals) {
+      writeFileSync(join(dir, 'lib', f), original, 'utf8');
+    }
+
+    const missed = modules.filter((f) => !output.includes(f));
     assertEqual(missed.length, 0,
       `以下 lib 模块的语法错误未被 check-hooks 捕获（需纳入语法检查范围）: ${missed.join(', ')}`);
   } finally {

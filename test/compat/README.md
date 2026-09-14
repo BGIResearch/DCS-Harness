@@ -3,7 +3,8 @@
 面向 **dsh 平台版本升级**的回归测试网。一条命令给出「插件是否还兼容当前 dsh」的明确结论。
 
 ```bash
-node test/compat/run.mjs                 # 全量（65 例，约 0.2s）
+node test/compat/run.mjs                 # 全量（142 例，约 1.8s）
+DSH_FAST=1 node test/compat/run.mjs      # 跳过探网端点（约 0.6s，本地快速迭代）
 node test/compat/run.mjs -l contract     # 只跑平台契约层
 node test/compat/run.mjs -k defineTool   # 关键词过滤
 node test/compat/run.mjs --json          # 机器可读报告（CI 用）

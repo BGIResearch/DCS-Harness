@@ -58,7 +58,8 @@
     "test:client": "node test/compat/run.mjs -l client-render",
     "test:http": "node test/compat/run.mjs -l http",
     "test:consistency": "node test/compat/run.mjs -l consistency",
-    "test:embedded": "node test/compat/run.mjs -l embedded"
+    "test:embedded": "node test/compat/run.mjs -l embedded",
+    "test:fast": "DSH_FAST=1 node test/compat/run.mjs"
   },
   "dependencies": {},
   "dsh": {

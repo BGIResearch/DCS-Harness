@@ -191,7 +191,10 @@ test('http', 'http/local-endpoints-respond', '本地端点真实响应且返回�
   //    最坏 30s 超时）。这类端点同样值得验证「能返回合法 JSON」，
   //    但给更宽松的超时，并在超时时明确跳过（视为环境限制而非不兼容）。
   const PURE_LOCAL = ['/v2/health'];
-  const PROBES_DCS = ['/v2/regions'];
+  // /v2/regions 会 await dcsStatus（真实 CLI + 网络往返）。它值得验证，
+  // 但会让套件变慢且依赖网络 —— 默认仍测（保证覆盖面），
+  // 设 DSH_FAST=1 可跳过，供本地快速迭代使用。
+  const PROBES_DCS = process.env.DSH_FAST === '1' ? [] : ['/v2/regions'];
   const problems = [];
   const skipped = [];
 
@@ -227,6 +230,9 @@ test('http', 'http/local-endpoints-respond', '本地端点真实响应且返回�
   assertEqual(problems.length, 0, problems.join('; '));
   if (skipped.length > 0) {
     process.stderr.write(`       ⏭ 跳过（环境限制）: ${skipped.join(', ')}\n`);
+  }
+  if (process.env.DSH_FAST === '1') {
+    process.stderr.write('       ⏭ 跳过探网端点（DSH_FAST=1）: /v2/regions\n');
   }
 });
 
