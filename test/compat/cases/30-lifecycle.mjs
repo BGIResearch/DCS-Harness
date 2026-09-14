@@ -3,7 +3,7 @@
 // 以及插件对本地状态（~/.dsh）的读写是否安全、幂等、可回滚。
 
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, statSync, rmSync, readdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { test, assert, assertEqual, assertIncludes, ROOT, findDshRoot } from '../lib/harness.mjs';
 
@@ -265,6 +265,63 @@ test('lifecycle', 'projects/delivery-update-revision', '交付文档更新的 re
     assert(r2 > r1, `revision 应递增：${r1} -> ${r2}`);
     assert(p2.delivery.sections && p2.delivery.sections.question, '既有章节不应被覆盖丢失');
   });
+});
+
+test('lifecycle', 'lifecycle/plugin-registered-in-dsh-profile', '插件在 dsh profile 中已注册为 bundle（真实装载证据）', async () => {
+  // 最强证据：本插件确实被运行中的 dsh 装载。
+  // 若本机存在 ~/.dsh/profiles/*，检查其中是否有引用本仓库的 profile；
+  // 没有 profile（如 CI 环境）则跳过，属环境限制而非缺陷。
+  const { existsSync, readdirSync: rd, readFileSync: rf, realpathSync } = await import('node:fs');
+  const profilesDir = join(homedir(), '.dsh', 'profiles');
+  if (!existsSync(profilesDir)) {
+    process.stderr.write('       ⏭ 跳过（无 ~/.dsh/profiles，非本地开发环境）\n');
+    return;
+  }
+
+  const pkgPath = join(ROOT, 'package.json');
+  const selfPkg = JSON.parse(rf(pkgPath, 'utf8'));
+  const repoReal = (() => { try { return realpathSync(ROOT); } catch { return ROOT; } })();
+
+  const registered = [];
+  for (const name of rd(profilesDir)) {
+    const pkgFile = join(profilesDir, name, 'package.json');
+    if (!existsSync(pkgFile)) continue;
+    let prof;
+    try { prof = JSON.parse(rf(pkgFile, 'utf8')); } catch { continue; }
+
+    const bundles = (prof.dsh && prof.dsh.profile && prof.dsh.profile.bundles) || [];
+    const deps = prof.dependencies || {};
+    // 该 profile 是否引用了本插件
+    const mentions = bundles.includes(selfPkg.name) || deps[selfPkg.name];
+    if (!mentions) continue;
+
+    // 依赖应指向本仓库（link: 或路径形式）
+    const dep = deps[selfPkg.name] || '';
+    let pointsHere = false;
+    if (typeof dep === 'string') {
+      const p = dep.replace(/^link:/, '').replace(/^file:/, '');
+      if (p) {
+        try { pointsHere = realpathSync(p) === repoReal; } catch { pointsHere = false; }
+      }
+    }
+    // bundles 已包含即算注册成功；依赖指向本仓库则更强
+    registered.push({ profile: name, inBundles: bundles.includes(selfPkg.name), pointsHere, dep });
+  }
+
+  if (registered.length === 0) {
+    process.stderr.write('       ⏭ 跳过（本机 dsh profile 未引用本插件）\n');
+    return;
+  }
+
+  const inBundles = registered.filter((r) => r.inBundles);
+  assert(inBundles.length > 0,
+    `在 dsh profile 的 dependencies 中找到本插件，但未列入 dsh.profile.bundles（不会被加载）: `
+    + JSON.stringify(registered));
+
+  // 至少一个 profile 的依赖指向本仓库（link: 开发态）
+  const linked = registered.filter((r) => r.pointsHere);
+  assert(linked.length > 0,
+    `引用了本插件的 profile 但依赖未指向本仓库: ${JSON.stringify(registered)}`);
 });
 
 // ---------------------------------------------------------------- 二进制解析
