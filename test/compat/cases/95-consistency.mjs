@@ -27,6 +27,10 @@ test('consistency', 'consistency/expert-references-resolve', '提示词中提到
     mentioned.add(m[1] + '-expert');
   }
 
+  // 前置守卫：若提取不到任何专家引用，下面的断言会恒真（空转）——必须先确认有内容可查
+  assert(mentioned.size > 0, '未从提示词中提取到任何专家引用（提取规则可能失效，用例将空转）');
+  assert(registered.size > 0, 'EXPERTS 为空（无法校验引用）');
+
   const dangling = [...mentioned].filter((x) => !registered.has(x));
   assertEqual(dangling.length, 0,
     `提示词提到但未注册的专家（agent 会调用不存在的实体）: ${dangling.join(', ')}`);
@@ -38,6 +42,7 @@ test('consistency', 'consistency/expert-references-resolve', '提示词中提到
 
 test('consistency', 'consistency/expert-kind-covers-experts', '每个专家都有类别标注', async () => {
   const atlas = await ATLAS();
+  assert(atlas.EXPERTS.length > 0, 'EXPERTS 为空（用例将空转）');
   const missing = [];
   for (const e of atlas.EXPERTS) {
     const name = typeof e === 'string' ? e : e.name;
@@ -75,6 +80,8 @@ test('consistency', 'consistency/mentioned-models-are-registered', '代码中提
   for (const m of idx.matchAll(/\b(deepseek-v4-[a-z]+|qwen[0-9.]+-[a-z]+|glm-[0-9.]+|kimi-k[0-9.]+)\b/g)) {
     mentioned.add(m[1]);
   }
+  assert(mentioned.size > 0, '未从代码中提取到任何模型引用（提取规则可能失效，用例将空转）');
+  assert(ids.size > 0, 'GENPILOT_MODELS 为空（无法校验引用）');
   const dangling = [...mentioned].filter((x) => !ids.has(x));
   assertEqual(dangling.length, 0,
     `代码提到但未注册的模型（选择菜单与实际不符）: ${dangling.join(', ')}`);
@@ -82,6 +89,7 @@ test('consistency', 'consistency/mentioned-models-are-registered', '代码中提
 
 test('consistency', 'consistency/model-labels-nonempty', '每个模型都有非空中文标签', async () => {
   const atlas = await ATLAS();
+  assert(atlas.GENPILOT_MODELS.length > 0, 'GENPILOT_MODELS 为空（用例将空转）');
   const problems = atlas.GENPILOT_MODELS
     .filter((m) => !m.label || String(m.label).trim().length < 2)
     .map((m) => m.id);
@@ -93,7 +101,7 @@ test('consistency', 'consistency/model-labels-nonempty', '每个模型都有非�
 test('consistency', 'consistency/api-key-skills-consistent', 'API key 技能表结构自洽', async () => {
   const atlas = await ATLAS();
   const skills = atlas.API_KEY_SKILLS;
-  assert(Array.isArray(skills) && skills.length > 0, 'API_KEY_SKILLS 不应为空');
+  assert(Array.isArray(skills) && skills.length > 0, 'API_KEY_SKILLS 不应为空（否则用例空转）');
 
   const problems = [];
   const names = new Set();
@@ -138,7 +146,7 @@ test('consistency', 'consistency/skill-top-dirs-unique', '技能库一级目录�
 test('consistency', 'consistency/regions-unique-and-shaped', '区域表无重复且结构完整', async () => {
   const atlas = await ATLAS();
   const regions = atlas.REGIONS;
-  assert(Array.isArray(regions) && regions.length > 0, 'REGIONS 不应为空');
+  assert(Array.isArray(regions) && regions.length > 0, 'REGIONS 不应为空（否则用例空转）');
 
   const names = regions.map((r) => r.name);
   assertEqual(new Set(names).size, names.length, `区域名重复: ${names.join(', ')}`);
@@ -244,6 +252,7 @@ test('consistency', 'consistency/tool-descriptions-references-resolve', '工具�
   };
   await mod.apply(ctx);
 
+  assert(tools.size > 0, '未注册任何工具（用例将空转）');
   const NON_TOOL = new Set(['dcs_task_ids', 'dcs_cloud', 'dcs_pat_']);
   const looksLikeTool = (x) => /^dcs_[a-z0-9]+(?:_[a-z0-9]+)*$/.test(x);
   const problems = [];

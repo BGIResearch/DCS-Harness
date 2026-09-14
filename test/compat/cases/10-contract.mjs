@@ -176,6 +176,7 @@ test('contract', 'plugin/host-inject-services', '宿主 inject 声明的服务�
     tokenMeter: 'dsh-token-meter',
     sessionPersistence: 'dsh-session-persistence',
   };
+  assert(mod.inject.length > 0, 'inject 为空（用例将空转）');
   const missing = [];
   for (const svc of mod.inject) {
     const provider = SERVICE_PROVIDERS[svc];

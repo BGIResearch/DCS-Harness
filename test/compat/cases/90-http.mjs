@@ -65,8 +65,11 @@ test('http', 'http/prefix-consistent', '客户端与服务端使用同一个路�
     `服务端应注册 ${PREFIX} 前缀路由`);
 
   // 前缀不得出现在客户端 path 字面量里（否则会拼成 /api/dcs-cloud/api/dcs-cloud/...）
-  const doubled = [...cli.matchAll(/\b(?:api|apiPost|request)\(\s*"(\/api\/[^"]*)"/g)]
-    .map((m) => m[1]);
+  // 前置守卫：先确认确实存在可检的 path 字面量，否则下面的断言恒真（空转）。
+  const allPaths = [...cli.matchAll(/\b(?:api|apiPost|request)\(\s*"([^"]*)"/g)].map((m) => m[1]);
+  assert(allPaths.length > 0,
+    '未从客户端提取到任何 path 字面量（提取规则可能失效，本用例将空转）');
+  const doubled = allPaths.filter((x) => x.startsWith('/api/'));
   assertEqual(doubled.length, 0,
     `客户端 path 字面量不应自带 /api 前缀（会与前缀拼接重复）: ${doubled.join(', ')}`);
 });
@@ -114,6 +117,8 @@ test('http', 'http/routes-shape-valid', '服务端路由满足 dsh WebRoute 契�
 
 test('http', 'http/exact-routes-unique', '精确路由 path 不重复（平台对重复注册抛错）', async () => {
   const src = IDX();
+  const routeBlocks = [...src.matchAll(/webServer\.register\(\{([\s\S]{0,400}?)\}\)/g)];
+  assert(routeBlocks.length > 0, '未解析到任何路由注册（用例将空转）');
   const seen = new Map();
   const dupes = [];
   for (const m of src.matchAll(/webServer\.register\(\{([\s\S]{0,400}?)\}\)/g)) {

@@ -148,6 +148,7 @@ test('e2e', 'e2e/dcs-command-surface-exists', '插件调用的每个 dcs 子命�
   const tables = new Map();
   for (const parent of parents) tables.set(parent, await subcommandsOf([parent]));
 
+  assert(cmds.size > 0, '未提取到任何 dcs 子命令（用例将空转）');
   const missing = [];
   for (const cmd of cmds) {
     const [parent, sub] = cmd.split(' ');
@@ -180,6 +181,9 @@ test('e2e', 'e2e/tools-are-readonly-in-this-layer', '本层不得调用任何写
   const body = src.split('// ---------------------------------------------------------------- 连接')[1] || '';
   // 只检查真正会执行的命令数组，不检查注释与说明文字
   const cmds = [...body.matchAll(/runDcs\(\[([^\]]*)\]/g)].map((m) => m[1]);
+  // 前置守卫：若提取不到任何命令，下面的检查不执行、problems 恒空（空转）
+  assert(cmds.length > 0,
+    '未从 e2e 层提取到任何 dcs 命令（提取规则可能失效，只读守卫将空转）');
   const problems = [];
   for (const c of cmds) {
     for (const bad of ['task', 'submit', 'upload', 'push', 'copy', 'rm', 'move']) {

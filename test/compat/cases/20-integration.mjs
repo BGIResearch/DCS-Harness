@@ -157,6 +157,7 @@ test('integration', 'load/schemas-compile', '每个工具的参数与输出 sche
   const mod = await import(join(ROOT, 'lib', 'index.js'));
   const { ctx, state } = makeHostCtx();
   await mod.apply(ctx);
+  assert(state.tools.length > 0, '未注册任何工具（用例将空转）');
   const failures = [];
   for (const t of state.tools) {
     try {
@@ -173,6 +174,7 @@ test('integration', 'load/output-renderers-robust', '每个工具的 output.rend
   const mod = await import(join(ROOT, 'lib', 'index.js'));
   const { ctx, state } = makeHostCtx();
   await mod.apply(ctx);
+  assert(state.tools.length > 0, '未注册任何工具（用例将空转）');
   const failures = [];
   for (const t of state.tools) {
     try {
@@ -256,6 +258,7 @@ test('integration', 'load/presenters-consistent', '呈现契约一致：terminal
   // generic 卡省略 presentResult 会沿用待执行卡片标题（可接受）；
   // 但 terminal/diff 卡若省略，完成后会用原始文本替换掉终端/差异卡片，
   // 造成「执行中美观、完成后塌成纯文本」的体验断裂——故强制配对。
+  assert(state.tools.length > 0, '未注册任何工具（用例将空转）');
   const CARD_REQUIRES_RESULT = new Set(['terminal', 'diff']);
   const failures = [];
   let withCall = 0;
@@ -354,6 +357,7 @@ test('integration', 'load/presenters-soft-validate', 'presentCall/presentResult 
   const { ctx, state } = makeHostCtx();
   await mod.apply(ctx);
 
+  assert(state.tools.length > 0, '未注册任何工具（用例将空转）');
   const problems = [];
   for (const t of state.tools) {
     if (typeof t.presentCall === 'function') {

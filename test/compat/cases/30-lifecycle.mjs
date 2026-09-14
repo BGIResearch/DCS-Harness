@@ -406,6 +406,8 @@ test('lifecycle', 'platform/client-inject-covers-slots', 'inject 声明覆盖客
   // 使用了 slots 服务本身 -> 需要 renderer
   if (src.includes('ctx.slots')) used.add('__slots_service');
 
+  // 前置守卫：若未提取到任何 slot，循环不执行、missing 恒空（空转）
+  assert(used.size > 0, '未从客户端提取到任何 slot 使用（用例将空转）');
   const missing = [];
   for (const slot of used) {
     const provider = SLOT_PROVIDERS[slot];

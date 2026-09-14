@@ -79,6 +79,8 @@ test('upgrade', 'session/older-version-is-migratable', '旧版本头被判为可
 
   // 对每一个旧版本，catalog 应表达「这是旧格式，需要迁移」，
   // 而不是直接拒绝。判据：status 不得为 unsupported（unsupported 专指「比本 build 新」）。
+  // 前置守卫：若 current 为 0，循环不执行、problems 恒空 —— 断言会空转
+  assert(current > 0, `currentVersion 应 > 0（实际 ${current}），否则本用例空转`);
   const problems = [];
   for (let v = 0; v < current; v++) {
     const r = sessionFormatCatalog.readHeader({ type: 'header', version: v });

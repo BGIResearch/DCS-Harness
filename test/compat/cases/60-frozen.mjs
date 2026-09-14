@@ -154,6 +154,7 @@ test('frozen', 'frozen/charts-not-mutated-in-place', '工具不得原地修改�
 
 test('frozen', 'frozen/render-tolerant-of-frozen-value', 'output.render 可安全处理冻结的输出值', async () => {
   const tools = await loadTools();
+  assert(tools.size > 0, '未注册任何工具（用例将空转）');
   const problems = [];
   for (const [name, t] of tools) {
     const req = (t.output.schema && t.output.schema.required) || [];
@@ -184,6 +185,7 @@ test('frozen', 'frozen/no-inplace-assign-in-source', '源码中不存在对参�
   const src = readFileSync(join(ROOT, 'lib', 'index.js'), 'utf8');
   const lines = src.split('\n');
   const hits = [];
+  let scanned = 0;
 
   lines.forEach((ln, i) => {
     const t = ln.trim();
@@ -191,11 +193,13 @@ test('frozen', 'frozen/no-inplace-assign-in-source', '源码中不存在对参�
     // 与 scripts/check-hooks.cjs 同源的检测：对可疑短名变量直接赋值属性，
     // 且不在 nextCharts 新数组写法上下文里。
     const m = t.match(/\b(c\d*|chart|ch)\d*\.(\w+)\s*=(?!=)/);
+    scanned++;
     if (m && !/nextCharts|payload\.|const |let |var /.test(t)) {
       hits.push(`lib/index.js:${i + 1}: ${t.slice(0, 90)}`);
     }
   });
 
+  assert(scanned > 0, '未扫描到任何源码行（用例将空转）');
   assertEqual(hits.length, 0,
     `发现疑似原地赋值（冻结对象会抛 readonly）：\n${hits.join('\n')}`, hits);
 });

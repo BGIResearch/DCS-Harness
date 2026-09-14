@@ -155,6 +155,63 @@ test('meta', 'meta/execute-tests-assert-real-success', '调用 execute 的用例
     `以下用例调用了 execute 但既无成功态断言、也未声明为负向用例（可能假绿）: ${problems.join(', ')}`);
 });
 
+test('meta', 'meta/loop-assertions-have-nonempty-source', '来源集合驱动的用例必须确认来源非空', async () => {
+  // 失败模式（本项目实际踩过）：`assertEqual(problems.length, 0)` 在循环
+  // **一次都没执行**时永远通过 —— 上游提取规则失效、数据源变空都会导致空转。
+  // 这类用例显示 PASS 却什么都没检查。
+  //
+  // 为避免误报，本守卫**只针对最危险的形态**：
+  //   const problems = [];            // 收集器
+  //   for (const x of <collection>)   // 由外部集合驱动
+  //   ...
+  //   assertEqual(problems.length, 0)
+  // 且该用例内**没有**任何「集合非空」的断言。
+  //
+  // 其它形态（如 assert / 显式 early-return）由各用例自行负责，
+  // 不在此处穷举 —— 过度宽泛的静态检查会产出大量误报，反而失去行动价值。
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const dir = join(ROOT, 'test', 'compat', 'cases');
+  const problems = [];
+
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.mjs'))) {
+    const src = readFileSync(join(dir, f), 'utf8');
+    const parts = src.split(/(?=test\(\s*'[\w]+'\s*,)/);
+    for (const p of parts) {
+      const idM = p.match(/test\(\s*'[\w]+'\s*,\s*'([^']+)'/);
+      if (!idM) continue;
+      const id = idM[1];
+
+      // 必须有「收集器 + for..of 循环 + length===0 断言」三件套
+      const hasCollector = /const\s+(\w+)\s*=\s*\[\]/.test(p);
+      const forOf = p.match(/for\s*\(\s*const\s+\w+\s+of\s+([\w.$()\[\]]+)/);
+      const zeroLen = /assertEqual\(\s*\w+\.length\s*,\s*0/.test(p);
+      if (!hasCollector || !forOf || !zeroLen) continue;
+
+      // 跳过「就地字面量数组」驱动的循环：字面量长度在源码里就固定了，
+      // 不可能因环境/提取规则而变空。两种形态都跳过：
+      //   1) for (const x of cases)            —— cases = ['a','b']
+      //   2) for (const x of [...A, ...B])     —— 字面量展开
+      const raw = forOf[1].replace(/[()]/g, '');
+      if (/^\.\.\./.test(raw) || /\[[\s\S]*\.\.\./.test(forOf[1])) continue;
+      const srcName = raw.replace(/[\[\]]/g, '');
+      const isLiteral = new RegExp(`const\\s+${srcName}\\s*=\\s*\\[`).test(p);
+      if (isLiteral) continue;
+
+      // 该用例内是否存在「来源非空」的断言
+      const guarded =
+        /assert\([\s\S]{0,150}?\.(length|size)\s*>\s*0/.test(p)
+        || /不应为空|不可能为空|不得为空/.test(p)
+        || /\b(scanned|checked|total|count|seen)\b\s*[+]{2}/.test(p);
+
+      if (!guarded) problems.push(`${f} :: ${id}（来源: ${forOf[1]}）`);
+    }
+  }
+
+  assertEqual(problems.length, 0,
+    `以下用例由集合驱动断言「无问题」，但未确认来源非空 —— 来源为空时会空转:\n  `
+    + problems.join('\n  '));
+});
+
 // ---------------------------------------------------------------- 运行器契约
 
 test('meta', 'meta/dsh-root-invalid-is-fatal', 'DSH_ROOT 无效时明确报错，不静默回退', async () => {
