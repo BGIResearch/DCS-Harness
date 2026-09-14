@@ -67,11 +67,85 @@ test('unit', 'audit/flags-dangerous-rm', 'audit 能识别全部危险 rm -rf 变
   assertEqual(missed.length, 0, `以下危险删除命令未被识别: ${JSON.stringify(missed)}`);
 });
 
+test('unit', 'audit/flags-dangerous-rm-extended', 'audit 覆盖 rm 的扩展危险变体（通配/上级/变量/xargs）', async () => {
+  const { auditScript } = await mod('audit.js');
+  // 这些变体同样可造成不可逆丢失。分级可接受（critical 或 high），但不能完全不报。
+  const cases = [
+    ['rm -rf /*', '通配符删除根下全部'],
+    ['rm -rf ..', '删除上级目录'],
+    ['rm -rf $TARGET', '变量间接（无法静态求值即视为危险）'],
+    ['echo x | xargs rm -rf', 'xargs 转发删除'],
+  ];
+  const missed = [];
+  for (const [cmd, why] of cases) {
+    const r = auditScript(cmd, 'shell');
+    const risky = r.findings.filter((f) => f.severity === 'critical' || f.severity === 'high');
+    if (risky.length === 0) missed.push(`${cmd} (${why})`);
+  }
+  assertEqual(missed.length, 0, `以下危险变体未被识别: ${missed.join('; ')}`);
+});
+
+test('unit', 'audit/flags-other-destructive-ops', 'audit 覆盖其它破坏性操作（find -delete / dd / 重定向覆盖）', async () => {
+  const { auditScript } = await mod('audit.js');
+  const cases = [
+    ['find / -delete', 'find 直接删除'],
+    ['dd of=/dev/sda', 'dd 写裸设备（无 if）'],
+    ['> /etc/passwd', '重定向覆盖系统文件'],
+  ];
+  const missed = [];
+  for (const [cmd, why] of cases) {
+    const r = auditScript(cmd, 'shell');
+    const risky = r.findings.filter((f) => f.severity === 'critical' || f.severity === 'high');
+    if (risky.length === 0) missed.push(`${cmd} (${why})`);
+  }
+  assertEqual(missed.length, 0, `以下破坏性操作未被识别: ${missed.join('; ')}`);
+});
+
 test('unit', 'audit/clean-script-low-risk', 'audit 对普通安全脚本不误报高危', async () => {
   const { auditScript } = await mod('audit.js');
   const r = auditScript('#!/bin/bash\necho hello\nls -l /tmp\n', 'shell');
   const critical = r.findings.filter((f) => f.severity === 'critical');
   assertEqual(critical.length, 0, `安全脚本被误判为 critical: ${JSON.stringify(critical)}`);
+});
+
+test('unit', 'audit/no-false-positive-on-idiomatic-cleanup', '生信脚本的常规清理写法不触发 critical/high', async () => {
+  const { auditScript } = await mod('audit.js');
+  // 这些都是真实生信脚本里的标准写法，规则收紧时极易误伤。
+  // 误报会造成告警疲劳，最终让人忽略真正的 critical —— 与安全目标相悖。
+  const safe = [
+    'rm -rf ./build',
+    'rm -rf build',
+    'rm -rf $WORKDIR/tmp',
+    'rm -rf $WORKDIR/$SAMPLE/tmp',
+    'rm -f /tmp/scratch.txt',
+    'find . -type f -name "*.tmp" -print',
+    'find /data -name "*.bam" -print | wc -l',
+    'dd if=input.bin of=output.bin bs=1M',
+    'echo hello > /tmp/result.txt',
+    'cat /public/ref/genome.fa | head -100',
+    'bash /data/work/pipeline.sh --shard 0',
+  ];
+  const noise = [];
+  for (const cmd of safe) {
+    const r = auditScript(cmd, 'shell');
+    const risky = r.findings.filter((f) => f.severity === 'critical' || f.severity === 'high');
+    if (risky.length > 0) noise.push(`${cmd} → ${risky.map((f) => f.severity).join(',')}`);
+  }
+  assertEqual(noise.length, 0, `以下常规清理写法被误报为 critical/high: ${noise.join('; ')}`);
+});
+
+test('unit', 'audit/absolute-path-severity-grading', '绝对路径删除按危险程度分级', async () => {
+  const { auditScript } = await mod('audit.js');
+  const sevOf = (cmd) => {
+    const r = auditScript(cmd, 'shell');
+    const pathFindings = r.findings.filter((f) => /删除/.test(f.message));
+    const order = { critical: 3, high: 2, medium: 1, low: 0, info: 0 };
+    return pathFindings.reduce((m, f) => Math.max(m, order[f.severity] || 0), 0);
+  };
+  // 根目录必须 critical（最高级）；容器工作区 high；普通临时目录不高于 medium
+  assertEqual(sevOf('rm -rf /'), 3, 'rm -rf / 必须为 critical');
+  assertEqual(sevOf('rm -rf /data/work'), 2, 'rm -rf /data/work 应为 high');
+  assert(sevOf('rm -rf /tmp/scratch') <= 1, 'rm -rf /tmp/scratch 不应为 high/critical（避免告警疲劳）');
 });
 
 test('unit', 'audit/flags-hardcoded-secret', 'audit 能识别硬编码密钥', async () => {
