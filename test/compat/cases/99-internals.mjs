@@ -588,6 +588,58 @@ test('internals', 'internals/extract-json-obj-from-llm-text', 'extractJsonObj �
   assertEqual(problems.length, 0, problems.join('; '));
 });
 
+// ---------------------------------------------------------------- 通道降级判定
+
+test('internals', 'internals/channel-unavailable-classification', 'isChannelUnavailable 准确识别「通道不可用」', async () => {
+  // 该判定决定 Pod 投递失败后**是否降级到宿主通道重试**。
+  // 漏判 → 本可成功的任务直接失败；误判 → 在真正的业务错误上白白重试一次。
+  const isChannelUnavailable = extractFunction('isChannelUnavailable');
+  const should = [
+    'unknown command "dcs task"',   // Pod 内 dcs 不认识命令
+    'Error: 认证失败',
+    '会话已过期',
+    '未登录',
+    'workspace not open',           // 容器未开
+    'connection refused',
+    'exec failed',
+  ];
+  const missed = should.filter((t) => !isChannelUnavailable(t));
+  assertEqual(missed.length, 0, `以下「通道不可用」未被识别（会错失降级重试）: ${missed.join('; ')}`);
+});
+
+test('internals', 'internals/file-visibility-classification', 'isFileVisibilityError 只匹配文件语境（不吞业务错误）', async () => {
+  // 真实缺陷（本轮发现）：原模式含**裸的 `does not exist`**，会匹配任意
+  // 「X does not exist」—— 于是 `image_url does not exist`（业务错误：镜像无效）
+  // 也被判为文件可见性问题，白白降级到宿主通道重试一次。
+  // 插件文档明确写了 `ubuntu:24.04-python3.12` 会报 `image_url不存在`，
+  // 说明该业务错误在 Pod 投递路径上真实存在。
+  const isFileVisibilityError = extractFunction('isFileVisibilityError');
+
+  // 1) 文件语境必须命中（含路径中带点号的形态）
+  const isFile = [
+    'file not found: /Files/x.bam',
+    'No such file or directory',
+    '文件在引擎中不可见',
+    'invalid path',
+    'input not found',
+    'file /Files/a.bam does not exist',   // ← 路径含点号，最该命中的形态
+  ];
+  const missed = isFile.filter((t) => !isFileVisibilityError(t));
+  assertEqual(missed.length, 0, `以下文件可见性问题未被识别: ${missed.join('; ')}`);
+
+  // 2) 非文件语境的业务错误**不得**命中（否则会白跑一次宿主重试）
+  const notFile = [
+    'image_url does not exist',      // 镜像无效（业务错误）
+    'resource does not exist',
+    'workflow does not exist',
+    'user does not exist',
+    '资源规格非法',
+  ];
+  const noise = notFile.filter((t) => isFileVisibilityError(t));
+  assertEqual(noise.length, 0,
+    `以下业务错误被误判为文件可见性问题（会触发无谓的宿主重试）: ${noise.join('; ')}`);
+});
+
 // ---------------------------------------------------------------- 抽取机制自检
 
 test('internals', 'internals/extraction-mechanism-works', '函数抽取机制本身有效（防静默空转）', async () => {
