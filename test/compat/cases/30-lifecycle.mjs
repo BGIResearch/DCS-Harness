@@ -559,20 +559,26 @@ test('lifecycle', 'lifecycle/all-writers-use-atomic', '所有持久化写入均�
   // 除 atomic-write.js 自身外，不应有直接写「目标文件」的调用。
   const { readFileSync, readdirSync } = await import('node:fs');
   const libDir = join(ROOT, 'lib');
+  const files = readdirSync(libDir).filter((x) => x.endsWith('.js'));
+  // 前置守卫：扫描不到文件时下面的断言恒真（空转）
+  assert(files.length > 0, '未扫描到任何 lib 模块（用例将空转）');
+  let scanned = 0;
   const problems = [];
 
-  for (const f of readdirSync(libDir).filter((x) => x.endsWith('.js'))) {
+  for (const f of files) {
     if (f === 'atomic-write.js') continue;          // 实现本体在此
     const src = readFileSync(join(libDir, f), 'utf8');
     src.split('\n').forEach((line, i) => {
       const t = line.trim();
       if (t.startsWith('//') || t.startsWith('*')) return;
+      scanned++;
       if (!/writeFileSync\s*\(/.test(t)) return;
       // 允许：写临时文件（tmp*）—— 那是原子写实现的一部分
       if (/writeFileSync\s*\(\s*tmp/.test(t)) return;
       problems.push(`${f}:${i + 1}: ${t.slice(0, 100)}`);
     });
   }
+  assert(scanned > 0, '未扫描到任何源码行（用例将空转）');
   assertEqual(problems.length, 0,
     `以下写入未走原子写工具（中断会留下半截文件）:\n  ${problems.join('\n  ')}`);
 });
