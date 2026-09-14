@@ -334,6 +334,61 @@ test('lifecycle', 'lifecycle/truncation-warns-not-silent', '超出上限而丢�
   });
 });
 
+test('lifecycle', 'lifecycle/data-survives-readwrite-cycles', '反复读写后项目数据完整保留（无静默腐蚀）', async () => {
+  // normProject 在**每次 load/save 时都会执行**。若它丢失字段或非幂等，
+  // 正常使用（不断读写）会**逐步腐蚀**数据 —— 这类问题极难察觉，
+  // 因为单次操作看起来都正常，只有累积后才暴露。
+  //
+  // 本用例建一个含完整嵌套结构的项目（customData / modules / runs+OAA /
+  // delivery sections），再反复触发读写，最后逐项核对全部保留。
+  await withIsolatedHome(async () => {
+    const { upsertProject, upsertModule, startRun, updateRun, updateDelivery, getProject } = await mod('projects.js');
+
+    await upsertProject({
+      project_id: 'X', title: 'T', objective: 'O',
+      model: 'deepseek-v4-flash', region: 'BGI-时空',
+      customData: { items: [{ path: '/Files/a', desc: 'da' }, { path: '/Files/b', desc: 'db' }], note: 'note' },
+    }, 's');
+
+    const modRes = await upsertModule('X', { name: 'M1', desc: 'd1' }, 's');
+    const mid = (modRes.module || modRes).id;
+
+    // 注意 API 契约：startRun 直接返回运行对象（其 id 字段为运行 id）
+    const runRes = await startRun('X', mid, { notes: 'n1' }, 's');
+    const run = runRes.run || runRes;
+    const rid = run.id || run.run_id;
+    assert(rid, `startRun 应返回带 id 的运行: ${JSON.stringify(runRes)}`);
+
+    const upd = await updateRun('X', mid, rid, {
+      status: 'done', progress: 100,
+      oaa: { observation: 'OBS', assessment: 'ASS', action: 'ACT' },
+    }, 's');
+    assert(upd && upd.ok !== false, `updateRun 应成功: ${JSON.stringify(upd)}`);
+
+    await updateDelivery('X', { sections: { question: 'Q', findings: 'F' } }, 's');
+
+    // 反复读写：建其它项目 + 触碰 X（触发多轮 normProject）
+    for (let i = 0; i < 10; i++) await upsertProject({ project_id: 'Y' + i }, 's');
+    await upsertProject({ project_id: 'X', title: 'T' }, 's');
+
+    const x = getProject('X');
+    const problems = [];
+    if ((x.modules || []).length !== 1) problems.push(`模块数 ${(x.modules || []).length} != 1`);
+    const r0 = (x.modules || [])[0] || {};
+    if ((r0.runs || []).length !== 1) problems.push(`运行数 ${(r0.runs || []).length} != 1`);
+    const rr = (r0.runs || [])[0] || {};
+    if (!rr.oaa || rr.oaa.observation !== 'OBS') problems.push('OAA 丢失或被改写');
+    if (rr.status !== 'done') problems.push(`运行状态被重置为 ${rr.status}`);
+    if ((x.customData && x.customData.items || []).length !== 2) problems.push('customData.items 丢失');
+    if (!x.delivery || !x.delivery.sections || x.delivery.sections.question !== 'Q') problems.push('交付章节丢失');
+    if (x.model !== 'deepseek-v4-flash') problems.push('model 被重置');
+    if (x.region !== 'BGI-时空') problems.push('region 被重置');
+
+    assertEqual(problems.length, 0,
+      `反复读写后数据被腐蚀: ${problems.join('; ')}`);
+  });
+});
+
 // ---------------------------------------------------------------- 交付文档
 
 test('lifecycle', 'projects/delivery-update-revision', '交付文档更新的 revision 单调递增', async () => {
