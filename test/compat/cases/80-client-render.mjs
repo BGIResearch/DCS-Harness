@@ -28,7 +28,13 @@ function makeReactShim() {
 
   const React = {
     createElement(type, props, ...children) {
-      return { $$typeof: 'element', type, props: props || {}, children: children.flat() };
+      // ⚠ 必须与真实 React 一致：children 放在 **props.children** 里。
+      // 早期版本把它放在独立的 element.children 字段，导致所有遍历
+      // props.children 的代码（含本文件的元素树校验与视图解包）全部落空 ——
+      // 6 条渲染用例因此长期是空转的（视图函数体从未被执行）。
+      const kids = children.length === 0 ? undefined
+        : (children.length === 1 ? children[0] : children.flat());
+      return { $$typeof: 'element', type, props: { ...(props || {}), children: kids }, key: null, ref: null };
     },
     Fragment: Symbol.for('react.fragment'),
     Component: class {},
@@ -90,9 +96,13 @@ function loadClientModule() {
 }
 
 /**
- * 从模块内部取出组件函数。
- * 客户端半只导出 { apply, inject }，组件是闭包内的私有函数，
- * 因此通过 apply 时注册的 slot 组件来获取（这正是真实渲染路径）。
+ * 触发 __ModuleLoader__ 注册并返回 slot 组件。
+ *
+ * ⚠ 注意：注册的组件是 `guarded(view)` 返回的 **Guarded 包装器**，
+ * 不是真实视图。直接调用包装器只会渲染出 `<ErrorBoundary><view/></ErrorBoundary>`，
+ * 而**不会执行视图自身的函数体** —— 那样测不到视图里的 hooks 与逻辑
+ * （早期版本正是如此，导致 6 条渲染用例大部分是空转）。
+ * 因此这里额外从包装器的元素树里**解包**出真实视图组件。
  */
 function collectComponents() {
   const def = loadClientModule();
@@ -116,7 +126,54 @@ function collectComponents() {
     get: () => undefined,
   });
 
-  return { components, React: shim.React, hooks: shim.hooks };
+  // 解包：Guarded 的源码是
+  //   function Guarded(props) { return h(ErrorBoundary, {hint}, h(view, props)); }
+  // 直接调用 Guarded 会**执行 h(ErrorBoundary,…)** —— 那只是创建元素、
+  // 不构造实例，本身是安全的；但随后我们递归进 children 时会碰到
+  // ErrorBoundary 这个 class，误当作函数调用就会抛
+  // "Class constructor ErrorBoundary cannot be invoked without 'new'"。
+  // 因此解包时**只遍历元素树、绝不调用任何 class 组件**。
+  const unwrapped = new Map();
+  const isClass = (fn) => {
+    if (typeof fn !== 'function') return false;
+    const src = Function.prototype.toString.call(fn);
+    return /^class\s/.test(src.trim()) || /\bclass\s+\w+\s+extends\b/.test(src);
+  };
+  for (const [id, entry] of components) {
+    const { meta, comp } = entry;
+    let real = comp;
+    if (typeof comp === 'function' && !isClass(comp)) {
+      shim.hooks.cursor = 0; shim.hooks.states.length = 0; shim.hooks.refs.length = 0; shim.hooks.effects.length = 0;
+      try {
+        const el = comp({ sessionId: 'probe', close: () => {}, size: 24 });
+        // 递归查找第一个「非 class 的函数型组件」——即真实视图
+        const probe = (node, depth = 0) => {
+          if (depth > 30 || !node || typeof node !== 'object') return null;
+          if (Array.isArray(node)) {
+            for (const c of node) { const r = probe(c, depth + 1); if (r) return r; }
+            return null;
+          }
+          if (node.$$typeof === 'element') {
+            const kids = node.props && node.props.children;
+            if (Array.isArray(kids)) {
+              for (const c of kids) { const r = probe(c, depth + 1); if (r) return r; }
+            } else if (kids) {
+              const r = probe(kids, depth + 1); if (r) return r;
+            }
+            if (typeof node.type === 'function' && !isClass(node.type) && node.type !== comp) {
+              return { comp: node.type, props: node.props };
+            }
+          }
+          return null;
+        };
+        const found = probe(el);
+        if (found && typeof found.comp === 'function') real = found.comp;
+      } catch { /* 解包失败则保留原组件 */ }
+    }
+    unwrapped.set(id, { meta, comp: real, wrapper: comp });
+  }
+
+  return { components: unwrapped, React: shim.React, hooks: shim.hooks };
 }
 
 // ---------------------------------------------------------------- 元素树校验
