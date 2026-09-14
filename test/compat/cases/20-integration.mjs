@@ -347,6 +347,88 @@ function minimalArgs(t) {
   return args;
 }
 
+test('integration', 'load/terminal-presenter-exit-code', '终端卡片从失败输出还原退出码徽章', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+  const t = state.tools.find((x) => x.name === 'dcs_terminal_exec');
+  assert(t, '应注册 dcs_terminal_exec');
+  assert(t.output.schema.properties.exit_code,
+    'output schema 应声明 exit_code（否则结构化退出码会被 additionalProperties:false 拒绝）');
+
+  const view = (text) => t.presentResult(
+    { command: 'ls /nope' },
+    { content: [{ type: 'text', text }], isError: false },
+  );
+
+  // 非 0 退出码 → 应设置 exitCode（UI 显示失败徽章）
+  assertEqual(view('❌ 失败：x\nboom\n(exit_code=1)').exitCode, 1, 'exit_code=1 应被还原');
+  assertEqual(view('boom\n(exit_code=127)').exitCode, 127, 'exit_code=127 应被还原');
+
+  // 成功（无 exit_code 文本）与显式 0 → 不应设置，避免误导性成功徽章
+  assertEqual(view('🖥️ 在线执行：\nok\n').exitCode, undefined,
+    '无退出码信息时不应设置 exitCode');
+  assertEqual(view('ok\n(exit_code=0)').exitCode, undefined,
+    'exit_code=0 不应设置徽章（成功是默认态）');
+
+  // 卡片类型与输出仍保持终端卡片语义
+  const v = view('hello');
+  assertEqual(v.card, 'terminal', '应保持终端卡片');
+  assertEqual(v.title, 'ls /nope', '标题应为命令');
+  assertEqual(v.output, 'hello', '输出应原样透传');
+});
+
+test('integration', 'load/cli-view-fields-declared', '返回 cliView 结果的工具必须声明其全部字段', async () => {
+  // 教训：给 cliView 增加 exit_code 字段后，dcs_task_status 的 output schema
+  // 是 additionalProperties:false 且未声明 exit_code —— 平台会拒绝该结果。
+  // 这类「共享 helper 增字段、消费方 schema 未跟上」的问题极易漏掉，故设此守卫。
+  //
+  // 注意：必须扫**源码**而非 t.execute.toString() —— defineTool 会把用户 execute
+  // 包一层（return userExecute(args, exec)），包装后的函数体里看不到 cliView。
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(join(ROOT, 'lib', 'index.js'), 'utf8');
+
+  // 1) 解析 cliView 实际返回的字段名
+  const cliStart = src.indexOf('function cliView(');
+  assert(cliStart > 0, '应找到 cliView 定义');
+  const cliBody = src.slice(cliStart, src.indexOf('\n}', cliStart));
+  const retIdx = cliBody.lastIndexOf('return {');
+  assert(retIdx > 0, 'cliView 应有 return 对象');
+  const retBlock = cliBody.slice(retIdx);
+  // 同时支持 `key: value` 与 ES6 简写 `key,`
+  const cliFields = [...retBlock.matchAll(/^\s{4}([a-z_][\w]*)\s*(?::|,|$)/gm)].map((m) => m[1]);
+  assert(cliFields.length >= 4,
+    `未能解析 cliView 返回字段（应含 ok/error/output/truncated 等），实际: ${JSON.stringify(cliFields)}`);
+
+  // 2) 按工具切分源码，找出「直接把 cliView(...) 作为返回值」的工具
+  const blocks = src.split(/ctx\.tools\.register\(defineTool\(\{/).slice(1);
+  const problems = [];
+  let checked = 0;
+
+  for (const b of blocks) {
+    const nameM = b.match(/name:\s*'([^']+)'/);
+    if (!nameM) continue;
+    const name = nameM[1];
+    // 只关心「整个工具的输出就是 cliView 结果」的形态
+    if (!/return cliView\(/.test(b)) continue;
+    checked++;
+
+    const schM = b.match(/schema:\s*\{([\s\S]*?)\}\s*,\s*\n\s*render\(/);
+    if (!schM) continue;
+    const sch = schM[1];
+    if (!/additionalProperties:\s*false/.test(sch)) continue;
+
+    const missing = cliFields.filter((f) => !new RegExp(`\\b${f}\\s*:`).test(sch));
+    if (missing.length > 0) {
+      problems.push(`${name}: 返回 cliView 但 schema 未声明 ${missing.join(', ')}`
+        + `（additionalProperties:false 会拒绝该结果）`);
+    }
+  }
+
+  assert(checked > 0, '应至少找到一个直接返回 cliView 的工具（否则守卫失效）');
+  assertEqual(problems.length, 0, problems.join('; '));
+});
+
 // ---------------------------------------------------------------- 客户端半
 
 test('integration', 'client/loads-in-moduleloader', '客户端半可在模拟 __ModuleLoader__ 环境中装载', async () => {
