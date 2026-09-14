@@ -190,11 +190,19 @@ test('frozen', 'frozen/no-inplace-assign-in-source', '源码中不存在对参�
   lines.forEach((ln, i) => {
     const t = ln.trim();
     if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) return;
-    // 与 scripts/check-hooks.cjs 同源的检测：对可疑短名变量直接赋值属性，
-    // 且不在 nextCharts 新数组写法上下文里。
+    // 与 scripts/check-hooks.cjs 同源的检测。注意两点（都是踩过的坑）：
+    //  1) 不能用 `!/nextCharts/` 做豁免 —— 真实的历史 bug 形态恰是
+    //     `c.data = local; nextCharts.push(c);` 同行含 nextCharts，
+    //     该豁免会把要拦的目标本身放过。
+    //  2) 豁免应基于「push 的是否为新对象」：只有本行 push 里含对象展开
+    //     （`push({ ...c, ... })`）才算合法的新对象写法。
     const m = t.match(/\b(c\d*|chart|ch)\d*\.(\w+)\s*=(?!=)/);
     scanned++;
-    if (m && !/nextCharts|payload\.|const |let |var /.test(t)) {
+    if (!m) return;
+    if (/^(const|let|var)\b/.test(t)) return;        // 声明行
+    if (/payload\./.test(t)) return;                  // payload 是本地构造的副本
+    const pushesNewObject = /push\(\s*\{[^}]*\.\.\./.test(t);
+    if (!pushesNewObject) {
       hits.push(`lib/index.js:${i + 1}: ${t.slice(0, 90)}`);
     }
   });

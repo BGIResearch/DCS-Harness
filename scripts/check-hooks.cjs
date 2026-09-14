@@ -58,10 +58,24 @@ function checkIndex() {
   lines.forEach((ln, i) => {
     const t = ln.trim();
     if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) return;
-    // 图表对象原地赋值：c.data = ...（非 nextCharts.push 的新对象写法）。
-    // (?!=) 排除 .data === / == 的比较运算（typeof c.data === 'string' 属合法读取）
-    if (/\b(?:c|c0|chart|ch)\d*\.data\s*=(?!=)/.test(ln) && !/nextCharts/.test(ln)) {
-      errors.push(`lib/index.js:${i + 1}: 图表对象原地赋值（冻结对象会抛 readonly 错误）：${t}`);
+    // 图表对象原地赋值：c.data = ...
+    //
+    // ⚠ 历史缺陷：原规则用 `!/nextCharts/.test(ln)` 排除「新对象写法」，
+    // 但**真实的历史 bug 形态恰恰同行含 nextCharts**：
+    //     if (local) { c.data = local; nextCharts.push(c); }
+    // 于是这条豁免把要拦的目标本身放过了 —— 规则形同虚设。
+    //
+    // 正确判据不是「行内是否出现 nextCharts」，而是**赋值后 push 的是不是同一个对象**：
+    //   ✔ 合法：nextCharts.push({ ...c, data: local })   —— push 的是新对象
+    //   ✘ 违规：c.data = local; nextCharts.push(c)        —— 原地改后 push 原对象
+    // 因此改为：只要出现 `<短名>.data =`（非比较运算）就报错；
+    // 唯一豁免是「本行的 push 明显在构造新对象」（含 `{ ...` 展开）。
+    const assign = /\b(?:c|c0|chart|ch)\d*\.data\s*=(?!=)/;
+    if (assign.test(ln)) {
+      const pushesNewObject = /push\(\s*\{[^}]*\.\.\./.test(ln);
+      if (!pushesNewObject) {
+        errors.push(`lib/index.js:${i + 1}: 图表对象原地赋值（冻结对象会抛 readonly 错误）：${t}`);
+      }
     }
   });
 }
