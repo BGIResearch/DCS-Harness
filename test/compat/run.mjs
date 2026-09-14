@@ -12,7 +12,8 @@
 //       / lifecycle（模块加载顺序与幂等） / upgrade（会话格式迁移链演练）
 //       / frozen（冻结参数不可变性） / e2e（真实 dcs 调用，可选）
 //       / client-render（客户端组件真实渲染） / http（HTTP 接口契约）
-//       / consistency（内部常量自洽性） / meta（测试自身有效性）
+//       / consistency（内部常量自洽性） / embedded（内嵌 Python 语法）
+//       / meta（测试自身有效性）
 
 import { readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -43,7 +44,7 @@ for (let i = 0; i < args.length; i++) {
 
   -k, --filter <s>   只跑 id/标题包含 s 的用例
   -l, --layer <s>    unit|contract|integration|lifecycle|upgrade|frozen|e2e
-                     |client-render|http|consistency|meta
+                     |client-render|http|consistency|embedded|meta
       --json         输出 JSON 报告
   -q, --quiet        只输出汇总
       --bail         首个失败即停

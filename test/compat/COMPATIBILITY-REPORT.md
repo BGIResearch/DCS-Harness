@@ -4,11 +4,11 @@
 |---|---|
 | 被测插件 | `dsh-dcs-cloud` v2.15.0 |
 | 目标平台 | **dsh 0.1.5-rc.1**（运行中） / dsh-tools 0.1.5-rc.2 |
-| 测试模块 | `test/compat`（零依赖 ESM，123 例，十层） |
-| 结论 | ✅ **兼容**（123/123 通过，耗时 ~1.5s） |
-| 多版本实测 | ✅ **0.1.5-alpha.1 / 0.1.5-rc.1 / 0.1.5-rc.2 均 123/123 通过** |
+| 测试模块 | `test/compat`（零依赖 ESM，140 例，十二层） |
+| 结论 | ✅ **兼容**（140/140 通过，耗时 ~1.8s） |
+| 多版本实测 | ✅ **0.1.5-alpha.1 / 0.1.5-rc.1 / 0.1.5-rc.2 均 140/140 通过** |
 | dcs CLI 实测 | ✅ **22 个插件调用的 dcs 子命令全部存在**（真实 CLI 校验） |
-| 修复缺陷 | **4 处真实缺陷**（审计安全 2 处 / 客户端装载 1 处 / 客户端崩溃隔离 1 处） |
+| 修复缺陷 | **5 处真实缺陷**（审计安全 ×2 / 客户端装载 / 崩溃隔离 / 提示词工具引用） |
 
 ```bash
 npm test          # 全量 93 例
@@ -165,7 +165,26 @@ ctx.slots.register({ name: "settings.section", id: "dcs-cloud", ... }, guarded(D
 **发现方式**：新增的 `client-render` 层用「所有视图注册必须经 `guarded()` 包裹」
 的断言扫出。该断言经变异验证：移除 `guarded()` 后立即变红。
 
-### 缺陷 3：`package.json` 的 `dsh.client.inject` 声明了不存在的包 🟠 客户端装载
+### 缺陷 3：systemPrompt 引用了 5 个不存在的工具 🟠 工具调用反复失败
+
+**现象**：`lib/index.js` 的 systemPrompt 与工具描述里写着
+`dcs_wdl_list` / `dcs_wdl_plan` / `dcs_wdl_check_parameter` /
+`dcs_wdl_fill_parameter` / `dcs_wdl_submit_task`，但插件**实际注册**的是
+`dcs_workflow_search` / `dcs_workflow_info` / `dcs_workflow_run`。
+
+**根因**：这些名字是**从外部 `dcs-workflow-skill` 文档抄来的**（该 skill 确有同名工具），
+本插件并未实现它们。
+
+**影响**：agent 严格按提示词去调用不存在的工具 → 反复失败，且失败原因难以归因
+（提示词与工具表不一致）。**全程不报任何错**。
+
+**为何长期未被发现**：提示词只是字符串。契约层查 API、集成层查注册、
+HTTP 层查路由 —— **没有任何一层会比对「提示词里写的工具名」与「实际注册的工具名」**。
+
+**修复**：修正 11 处引用（注释 / 工具描述 / systemPrompt / 投递结果提示），
+并新增两条守卫：`prompt-tool-references-resolve`、`tool-descriptions-references-resolve`。
+
+### 缺陷 4：`package.json` 的 `dsh.client.inject` 声明了不存在的包 🟠 客户端装载
 
 **现象**：原值 `@deepseek-ai/dsh-client-runtime` 在 dsh 0.1.5-rc.1 中**不存在**
 （核对官方 63 个 `dsh-client-*` 包，无一声明或引用该包名）。
