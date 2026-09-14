@@ -55,7 +55,17 @@ rm -rf /tmp/x                 → medium  （临时目录）
 现状：12 个工具有 `presentCall`（待执行卡），但只有 `dcs_terminal_exec` 配了
 `presentResult`（完成卡）。11 个工具在完成后会从「精美卡片」塌回纯文本。
 
-已新增 `integration/load/presenters-consistent` 强制 `terminal`/`diff` 卡配对。
+**已做** ✅：
+- 核实 dsh 契约后确认：`generic` 卡省略 `presentResult` 时，
+  平台会**保留待执行卡片标题 + 渲染原始结果内容** —— 属可接受的渐进增强，
+  不是缺陷。故未强行给 11 个工具塞 presenter（避免无谓改动）。
+- 强制 `terminal`/`diff` 卡配对（`integration/load/presenters-consistent`）。
+- 补齐 `exitCode` 徽章：原注释声称「完成后带 stdout+退出码」，
+  但 `presentResult` 从未设置 `exitCode`。现已从渲染文本还原退出码并露出，
+  同时 `cliView` 增加结构化 `exit_code` 字段（详见第 15 条）。
+- 新增 `load/presenters-soft-validate`：presenter 对非法参数必须返回
+  `undefined` 而非抛错（dsh 会先软校验）。
+
 **建议继续**：为高频检索类工具补 `presentResult`，用 `card:'generic'` 的
 `title`/`content` 重新组织完成态展示：
 
@@ -202,7 +212,26 @@ lib/
 收益：可维护性、review 粒度、按模块跑测试。测试模块的 `load/*` 用例天然兼容拆分
 （它们只关心最终注册了哪些工具）。
 
-### 14. `tokens:` 与成本可视化
+### 14. ✅（已修）共享 helper 增字段导致消费方 schema 拒绝
+
+**问题**：`cliView` 是 2 个工具（`dcs_terminal_exec` / `dcs_task_status`）共享的
+结果构造 helper。给它增加 `exit_code` 字段后，`dcs_task_status` 的
+output schema 是 `additionalProperties: false` 且未声明该字段 —— **平台会拒绝该结果**。
+
+**修复**：为 `dcs_task_status` 补声明 `exit_code`；并新增守卫
+`integration/load/cli-view-fields-declared`：
+
+- 解析 `cliView` 实际返回的字段（支持 `key: value` 与 ES6 简写 `key,`）
+- 按工具切分源码，凡**直接** `return cliView(...)` 且 schema 为
+  `additionalProperties: false` 的工具，必须声明全部字段
+- **关键实现细节**：必须扫源码而非 `t.execute.toString()` ——
+  `defineTool` 会把用户 `execute` 包一层（`return userExecute(args, exec)`），
+  包装后完全看不到 `cliView`。初版守卫因此**完全失效**，经变异测试才发现。
+
+**教训**：这类「共享 helper 增字段、消费方 schema 未跟上」的问题，
+静态扫描 + 变异验证缺一不可。
+
+### 15. `tokens:` 与成本可视化
 
 `dcs_task_status` 已能取费用。建议把「本轮会话总费用」聚合到交付文档，
 并在离线任务完成后用 `deferContext` 提示预估费用。
