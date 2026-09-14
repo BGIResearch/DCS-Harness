@@ -279,6 +279,40 @@ test('lifecycle', 'lifecycle/delete-project-session-isolated', 'deleteProject �
   });
 });
 
+test('lifecycle', 'lifecycle/truncation-warns-not-silent', '超出上限而丢弃项目/任务时必须告警（不得静默丢数据）', async () => {
+  // 发现：projects.js 的 `saveAll(all.slice(0, 200))` 与 tasks.js 的
+  // `tasks.slice(0, 100)` 会在超限时**静默丢弃最旧记录**。
+  // 一条项目记录含其全部模块、运行历史（OAA）与交付文档 —— 丢失不可恢复。
+  // 上限本身合理（JSON 单文件不宜无限增长），但必须让用户知情。
+  await withIsolatedHome(async () => {
+    const { upsertProject, listProjects } = await mod('projects.js');
+
+    const warnings = [];
+    const onWarn = (w) => warnings.push(w);
+    process.on('warning', onWarn);
+    try {
+      // 建到超过上限（200）
+      for (let i = 0; i < 203; i++) {
+        await upsertProject({ project_id: 'P' + String(i).padStart(3, '0') }, 's');
+      }
+      await new Promise((r) => setTimeout(r, 100));   // emitWarning 异步派发
+    } finally {
+      process.removeListener('warning', onWarn);
+    }
+
+    const list = listProjects('s');
+    assertEqual(list.length, 200, `应修剪到 200，实际 ${list.length}`);
+
+    const limitWarnings = warnings.filter((w) => w && w.code === 'DCS_PROJECT_LIMIT');
+    assert(limitWarnings.length > 0,
+      '超限丢弃项目时**必须**发出 DCS_PROJECT_LIMIT 告警（否则用户的数据静默消失）');
+    // 告警应包含可操作信息：丢了几个、备份路径
+    const msg = String(limitWarnings[0].message || '');
+    assertIncludes(msg, '丢弃', '告警应说明丢弃行为');
+    assert(/备份|backup|\.json/.test(msg), `告警应给出备份路径建议，实际: ${msg}`);
+  });
+});
+
 // ---------------------------------------------------------------- 交付文档
 
 test('lifecycle', 'projects/delivery-update-revision', '交付文档更新的 revision 单调递增', async () => {
