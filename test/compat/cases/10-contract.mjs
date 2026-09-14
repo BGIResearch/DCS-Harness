@@ -185,6 +185,30 @@ test('contract', 'plugin/host-inject-services', '宿主 inject 声明的服务�
   assertEqual(missing.length, 0, `inject 的服务提供方缺失: ${missing.join(', ')}`);
 });
 
+test('contract', 'plugin/compat-declaration-matches-runtime', 'dsh.compat 声明的已测版本与运行时一致', async () => {
+  const compat = PLUGIN_PKG.dsh && PLUGIN_PKG.dsh.compat;
+  assert(compat, 'package.json 应声明 dsh.compat（记录已测的 dsh 版本）');
+  assert(compat.tested, 'dsh.compat.tested 必需');
+
+  const root = requireDshRoot();
+  const runtime = pkgJson(join(join(root, '@deepseek-ai', 'dsh'), ''));
+  const actual = runtime && runtime.version;
+
+  // 不强制相等（rc 迭代快），但必须显著：运行时比声明的新时给出提示，
+  // 因为「声明已测的版本」是给用户与 CI 做兼容判断的依据。
+  assert(actual, '应能读到运行中的 dsh 版本');
+  const norm = (v) => String(v).replace(/-.*$/, '');
+  const [amaj, amin] = norm(actual).split('.').map(Number);
+  const [tmaj, tmin] = norm(compat.tested).split('.').map(Number);
+  assert(amaj === tmaj,
+    `运行时 dsh 主版本 ${actual} 与已测声明 ${compat.tested} 主版本不一致，请重跑兼容性测试并更新声明`);
+  // 次版本不一致时给出明确提示（不失败，但写入 detail 便于报告）
+  if (amin !== tmin) {
+    process.stderr.write(
+      `  [提示] 运行时 dsh=${actual} 与 dsh.compat.tested=${compat.tested} 次版本不同，建议更新声明\n`);
+  }
+});
+
 test('contract', 'plugin/cordis-patch-id', 'cordis.patch.yml 的 id 与插件 name 一致', async () => {
   const patch = readFileSync(join(ROOT, 'cordis.patch.yml'), 'utf8');
   assertIncludes(patch, 'dsh-dcs-cloud', 'patch 文件应引用插件 id');
