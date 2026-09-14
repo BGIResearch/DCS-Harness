@@ -285,16 +285,30 @@ test('lifecycle', 'lifecycle/truncation-warns-not-silent', '超出上限而丢�
   // 一条项目记录含其全部模块、运行历史（OAA）与交付文档 —— 丢失不可恢复。
   // 上限本身合理（JSON 单文件不宜无限增长），但必须让用户知情。
   await withIsolatedHome(async () => {
-    const { upsertProject, listProjects } = await mod('projects.js');
+    const { upsertProject, listProjects, projectsPath } = await mod('projects.js');
+    const { writeFileSync, readFileSync, existsSync } = await import('node:fs');
+
+    // 性能：逐条 upsert 203 次是 O(n²)（每次全量读写 JSON，实测 1.3s）。
+    // 改为**直接预置** 200 条到存储文件，再触发 1 次 upsert 走截断路径 ——
+    // 覆盖完全相同，成本降到 O(n)。
+    const seed = { projects: [] };
+    for (let i = 0; i < 200; i++) {
+      seed.projects.push({
+        id: 'P' + String(i).padStart(3, '0'),
+        sessionId: 's',
+        title: 'T' + i,
+        createdAt: Date.now() - (200 - i) * 1000,
+        updatedAt: Date.now() - (200 - i) * 1000,
+      });
+    }
+    writeFileSync(projectsPath(), JSON.stringify(seed, null, 2));
 
     const warnings = [];
     const onWarn = (w) => warnings.push(w);
     process.on('warning', onWarn);
     try {
-      // 建到超过上限（200）
-      for (let i = 0; i < 203; i++) {
-        await upsertProject({ project_id: 'P' + String(i).padStart(3, '0') }, 's');
-      }
+      // 再建 1 个 → 总数 201，触发修剪
+      await upsertProject({ project_id: 'P_NEW' }, 's');
       await new Promise((r) => setTimeout(r, 100));   // emitWarning 异步派发
     } finally {
       process.removeListener('warning', onWarn);
@@ -302,14 +316,21 @@ test('lifecycle', 'lifecycle/truncation-warns-not-silent', '超出上限而丢�
 
     const list = listProjects('s');
     assertEqual(list.length, 200, `应修剪到 200，实际 ${list.length}`);
+    assert(list.some((x) => x.id === 'P_NEW'), '新项目应被保留（修剪的是最旧的）');
 
     const limitWarnings = warnings.filter((w) => w && w.code === 'DCS_PROJECT_LIMIT');
     assert(limitWarnings.length > 0,
       '超限丢弃项目时**必须**发出 DCS_PROJECT_LIMIT 告警（否则用户的数据静默消失）');
-    // 告警应包含可操作信息：丢了几个、备份路径
     const msg = String(limitWarnings[0].message || '');
     assertIncludes(msg, '丢弃', '告警应说明丢弃行为');
     assert(/备份|backup|\.json/.test(msg), `告警应给出备份路径建议，实际: ${msg}`);
+    // 告警应指出被丢弃的 ID，便于用户定位。
+    // 注意：数组顺序即文件顺序，upsert 时新记录 unshift 到最前，
+    // 因此 slice(0,200) 丢弃的是**尾部**（本用例中即最后种入的 P199）。
+    // 断言「包含某个被丢弃的 ID」而非写死具体 ID，避免与顺序假设耦合。
+    const dropped = seed.projects.map((x) => x.id).filter((id) => !list.some((x) => x.id === id));
+    assertEqual(dropped.length, 1, `应恰好丢弃 1 个，实际 ${dropped.length}`);
+    assertIncludes(msg, dropped[0], `告警应列出被丢弃的项目 ID（${dropped[0]}）`);
   });
 });
 
