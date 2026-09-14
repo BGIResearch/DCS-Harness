@@ -138,16 +138,16 @@ test('lifecycle', 'config/atomic-write-and-perms', '配置写入原子化且权�
     assertIncludes(raw, 'dcs_pat_TEST', 'PAT 应写入配置');
     assertEqual(loadCfg().pat, 'dcs_pat_TEST', 'PAT 应可读回');
 
-    // 4) 临时文件的权限也必须是 600（否则写入窗口期会泄露密钥）
-    //    这里通过「模拟写入中断」间接验证：即使只创建临时文件，也不应默认 644。
-    //    做法：直接调用 saveCfg 无法拿到中间态，改为检查实现是否用了 mode 选项
-    //    （静态断言，配合上面的「无残留」共同保障）。
-    // 注意：不能用 [^)]* 匹配调用参数 —— 参数里含 JSON.stringify(...) 的右括号，
-    // 正则会提前截断（初版即因此误报）。改为在同一行内宽松匹配。
-    const src = readFileSync(join(ROOT, 'lib', 'dcs-client.js'), 'utf8');
-    const line = src.split('\n').find((l) => /writeFileSync\(\s*tmp/.test(l)) || '';
-    assert(/mode:\s*0o600/.test(line),
-      `写临时文件时应显式指定 mode 0o600（否则密钥在写入窗口期权限过宽）；实际行: ${line.trim()}`);
+    // 4) 临时文件权限必须在**写入前**收紧（否则内容会以默认 umask 短暂暴露）。
+    //    saveCfg 现在委托给 lib/atomic-write.js 的 atomicWrite(target, content, {mode})，
+    //    因此这里检查两处：调用方是否传了 mode；实现是否把它用在 writeFileSync 上。
+    const caller = readFileSync(join(ROOT, 'lib', 'dcs-client.js'), 'utf8');
+    assert(/atomicWrite\(cfgPath\(\)[\s\S]{0,120}?mode:\s*0o600/.test(caller),
+      'saveCfg 调用 atomicWrite 时应传入 mode: 0o600（否则密钥写入窗口期权限过宽）');
+
+    const impl = readFileSync(join(ROOT, 'lib', 'atomic-write.js'), 'utf8');
+    assert(/writeFileSync\(\s*tmp[^\n]*mode/.test(impl),
+      'atomicWrite 应把 mode 应用到临时文件的 writeFileSync 上（写入前收紧权限）');
   });
 });
 
@@ -507,6 +507,74 @@ test('lifecycle', 'lifecycle/corrupt-store-does-not-nuke-silently', '存储损�
     assert(existsSync(p), '损坏文件不应被删除');
     assert(readFileSync(p, 'utf8').length > 0, '损坏文件内容应保留，便于诊断/恢复');
   });
+});
+
+test('lifecycle', 'lifecycle/atomic-write-helper', 'atomicWrite 保证原子性、权限与失败清理', async () => {
+  // 统一到 lib/atomic-write.js 后，直接测该工具本身（比逐个存储测更彻底）。
+  const { atomicWrite } = await mod('atomic-write.js');
+  const { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync, existsSync, mkdirSync } =
+    await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'aw-'));
+
+  try {
+    // 1) 基本写入 + 无临时残留
+    const f1 = join(dir, 'a.txt');
+    atomicWrite(f1, 'hello');
+    assertEqual(readFileSync(f1, 'utf8'), 'hello', '内容应正确写入');
+    assertEqual(readdirSync(dir).filter((x) => x.includes('.tmp-')).length, 0,
+      '成功后不应残留临时文件');
+
+    // 2) 覆盖写：旧内容不应残留片段
+    atomicWrite(f1, 'world-longer-content');
+    assertEqual(readFileSync(f1, 'utf8'), 'world-longer-content', '应完整覆盖');
+    atomicWrite(f1, 'x');   // 变短
+    assertEqual(readFileSync(f1, 'utf8'), 'x', '短内容覆盖后不得残留旧内容尾巴');
+
+    // 3) mode 生效（含密钥文件的场景）
+    const f2 = join(dir, 'secret.json');
+    atomicWrite(f2, '{"k":1}', { mode: 0o600 });
+    assertEqual(statSync(f2).mode & 0o777, 0o600, '应应用指定权限模式');
+
+    // 4) 自动建父目录
+    const deep = join(dir, 'x', 'y', 'z.txt');
+    atomicWrite(deep, 'deep');
+    assert(existsSync(deep), '应自动创建父目录');
+
+    // 5) mkdir:false 时不越权创建目录
+    const noMk = join(dir, 'nope', 'f.txt');
+    let threw = false;
+    try { atomicWrite(noMk, 'x', { mkdir: false }); } catch { threw = true; }
+    assert(threw, 'mkdir:false 时父目录不存在应报错（而非静默创建）');
+    assertEqual(readdirSync(dir).filter((x) => x.includes('.tmp-')).length, 0,
+      '失败后也不应残留临时文件（必须清理）');
+  } finally {
+    const { rmSync } = await import('node:fs');
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('lifecycle', 'lifecycle/all-writers-use-atomic', '所有持久化写入均使用原子写（防新代码漏用）', async () => {
+  // 守卫：新增存储时容易忘记原子写。扫描 lib/ 下所有 writeFileSync 调用，
+  // 除 atomic-write.js 自身外，不应有直接写「目标文件」的调用。
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const libDir = join(ROOT, 'lib');
+  const problems = [];
+
+  for (const f of readdirSync(libDir).filter((x) => x.endsWith('.js'))) {
+    if (f === 'atomic-write.js') continue;          // 实现本体在此
+    const src = readFileSync(join(libDir, f), 'utf8');
+    src.split('\n').forEach((line, i) => {
+      const t = line.trim();
+      if (t.startsWith('//') || t.startsWith('*')) return;
+      if (!/writeFileSync\s*\(/.test(t)) return;
+      // 允许：写临时文件（tmp*）—— 那是原子写实现的一部分
+      if (/writeFileSync\s*\(\s*tmp/.test(t)) return;
+      problems.push(`${f}:${i + 1}: ${t.slice(0, 100)}`);
+    });
+  }
+  assertEqual(problems.length, 0,
+    `以下写入未走原子写工具（中断会留下半截文件）:\n  ${problems.join('\n  ')}`);
 });
 
 // ---------------------------------------------------------------- 交付文档
