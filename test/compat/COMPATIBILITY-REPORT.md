@@ -1,0 +1,212 @@
+# DCS-Harness × dsh 0.1.5-rc 兼容性测试报告
+
+| 项目 | 值 |
+|---|---|
+| 被测插件 | `dsh-dcs-cloud` v2.15.0 |
+| 目标平台 | **dsh 0.1.5-rc.1**（运行中） / dsh-tools 0.1.5-rc.2 |
+| 测试模块 | `test/compat`（零依赖 ESM，65 例，四层） |
+| 结论 | ✅ **兼容**（65/65 通过，耗时 ~0.15s） |
+| 修复缺陷 | 2 处真实缺陷（1 处安全影响、1 处客户端装载） |
+
+```bash
+npm test          # 全量 65 例
+npm run test:contract   # 只看平台契约
+```
+
+---
+
+## 一、测试结论总览
+
+| 层次 | 通过 | 说明 |
+|---|---|---|
+| `unit` | 19/19 | 插件纯逻辑（atlas/audit/plan/report/tasks/projects/dcs-client） |
+| `contract` | 15/15 | 插件消费的 dsh 平台契约全部成立 |
+| `integration` | 11/11 | 插件可装载，48 个工具全部注册且 schema 可编译 |
+| `lifecycle` | 20/20 | 配置/任务库/项目库生命周期、权限、幂等 |
+
+---
+
+## 二、平台契约核验明细
+
+逐项验证插件依赖的 dsh 私有 API 在 0.1.5-rc.1 上仍然成立：
+
+### 2.1 工具定义契约
+
+| 契约 | 插件用法 | 0.1.5 状态 |
+|---|---|---|
+| `defineTool(options)` | 48 处调用 | ✅ 导出未变，签名兼容 |
+| 参数 schema DSL | `string`/`number`/`boolean`/`array`/`object`/`json`/`enum`/`required:true` | ✅ 全部被 `parameterSchemaSpecToJsonSchema` 接受 |
+| 输出 value schema | `output.schema` + 嵌套 `additionalProperties` + `required` | ✅ 全部被 `valueSchemaSpecToJsonSchema` 接受 |
+| `output.render(args, value)` | 48 处 | ✅ 返回 `ContentBlock[]` 契约未变 |
+| `execute(args, exec)` | 48 处 | ✅ 平台仍会在 execute 前做严格参数校验 |
+| `isConcurrencySafe(args)` | 14 处 | ✅ 仍在 `DefineToolOptions` 中 |
+| `timeoutMs` | 84 处 | ✅ 仍要求正有限数 |
+| `presentCall` / `presentResult` | 12 处 / 1 处 | ✅ `ToolCallView` / `ToolResultView` 联合类型未变 |
+
+**关键点**：`defineTool` 的 `presentCall`/`presentResult` 在 0.1.5 会**先软校验参数**，
+非法则回退通用卡片（`if (validate(args).length > 0) return void 0`）——插件的纯函数式
+presenter 写法天然满足该约束。
+
+### 2.2 宿主服务契约
+
+`inject = ['tools', 'systemPrompt', 'webServer', 'sessions', 'tokenMeter', 'sessionPersistence']`
+
+| 服务 | 提供方包 | 0.1.5 状态 |
+|---|---|---|
+| `tools` | `dsh-tools` | ✅ |
+| `systemPrompt` | `dsh-system-prompt` | ✅ |
+| `webServer` | `dsh-host-webserver` | ✅ |
+| `sessions` | `dsh-session` | ✅ |
+| `tokenMeter` | `dsh-token-meter` | ✅ |
+| `sessionPersistence` | `dsh-session-persistence` | ✅ |
+
+**方法签名核验**：
+
+- `systemPrompt.section({ name, order, text: () => string })` ✅ 与插件用法一致
+- `webServer.register({ kind: 'exact'|'prefix', path, handler })` ✅ 与插件 2 处调用一致，
+  且插件的 `path` 均无尾斜杠、不重复 —— 满足平台「重复注册抛错」约束
+
+### 2.3 客户端契约
+
+| 契约 | 状态 |
+|---|---|
+| `window.__ModuleLoader__.load({ id, factory })` 信封 | ✅ 仍为 0.1.5 的客户端模块格式 |
+| `id` 与插件名一致（`dsh-dcs-cloud`） | ✅ |
+| slot `conversation.view` | ✅ 存在（`dsh-client-ui-conversation`） |
+| slot `settings.section` | ✅ 存在（`dsh-client-ui-settings-general`） |
+| slot `sidebar.brand.mark` / `sidebar.brand.name` | ✅ 存在（`dsh-client-ui-sidebar`） |
+| `ctx.slots.inject(name, fn)` / `ctx.slots.register(meta, comp)` | ✅ 签名未变 |
+
+### 2.4 会话格式
+
+dsh 0.1.5 提供完整迁移链 `dsh-session-format-v0-to-v1` / `v1-to-v2` / `v2-to-v3`，
+**升级不会丢历史会话** ✅。
+
+---
+
+## 三、发现的版本错位风险
+
+### 3.1 peerDependencies 滞后（需治理，未致失败）
+
+```
+实际运行 dsh-tools : 0.1.5-rc.2
+peerDependencies   : ^0.1.1-rc.2   ← 滞后 4 个 rc 版本
+devDependency      : 0.1.1-rc.2    ← 本地开发/CI 装的是旧版
+```
+
+**风险**：`pnpm install` 后本地解析到 0.1.1-rc.2，而运行时是 0.1.5-rc.2。
+两版 API 目前兼容，但本地无法捕获未来平台变更 —— 即「开发环境比生产环境旧」。
+
+**建议**：把 `devDependencies` 与 `peerDependencies` 提升到 `^0.1.5-rc.2`，
+并在 CI 中用真实 dsh 版本跑 `npm run test:contract`。
+
+> `contract/platform/dsh-tools-version` 用例已在守护主次版本线；上述滞后属同线（0.1.x）故未失败，
+> 一旦 dsh 进入 0.2.x 会立即红灯。
+
+### 3.2 已修复：`dsh.client.inject` 引用了不存在的包
+
+见第四章缺陷 2。
+
+---
+
+## 四、修复的真实缺陷
+
+### 缺陷 1：`lib/audit.js` 漏检最危险的删除命令 🔴 安全影响
+
+**现象**：脚本静态审计的最核心职责是拦截危险删除，但实际行为是反的：
+
+| 命令 | 修复前 | 期望 |
+|---|---|---|
+| `rm -rf /` | ❌ 漏报（仅报「缺 shebang」） | 🔴 critical |
+| `rm -rf ~` | ❌ 漏报 | 🔴 critical |
+| `rm -rf / ` | ❌ 漏报 | 🔴 critical |
+| `rm -rf /data/work` | ✅ critical | 🔴 critical |
+| `rm -f /tmp/x`（无 `-r`） | ⚠️ 误报 critical | ✅ 不报 |
+
+**根因**：正则 `/\brm\s+-rf\s+\/\b/` 中用 `\b` 作为目标后的边界，但 `/` 和 `~` 都是
+**非单词字符**，`\b` 在「非单词字符 → 行尾」处**不成立**，故 `rm -rf /`（行尾）
+与 `rm -rf ~` 全部漏检；而 `rm -rf /data` 因后面是字母 `d` 反而命中 —— 是偶然生效。
+另外原正则要求 `-rf` 连写，`rm -fr /`、`rm -r -f /data` 也逃逸。
+
+**修复**：改用「行尾 / 空白 / 分隔符」作边界，并强制要求递归标志：
+
+```js
+{ re: /\brm\s+(?:-[a-zA-Z]+\s+)*-[a-zA-Z]*[rR][a-zA-Z]*(?:\s+-[a-zA-Z]+)*\s*\/(?=\s|$|;|&|\||[A-Za-z])/, sev: 'critical', ... }
+```
+
+**验证**（危险集 + 安全集双向断言）：
+
+```
+危险集 9/9 全命中：rm -rf / · /data/work · * · ~ · "/ " · $HOME · "rm  -rf  /" · rm -fr / · rm -r -f /data
+安全集 6/6 零误报：rm -f /tmp/x.txt · rm -rf ./build · rm -rf build · ls -l /tmp · mkdir -p /work/a · rm /tmp/a.txt
+```
+
+### 缺陷 2：`package.json` 的 `dsh.client.inject` 声明了不存在的包 🟠 客户端装载
+
+**现象**：原值 `@deepseek-ai/dsh-client-runtime` 在 dsh 0.1.5-rc.1 中**不存在**
+（核对官方 63 个 `dsh-client-*` 包，无一声明或引用该包名）。
+
+**影响**：dsh 客户端模块图对 `inject` 的语义是**软依赖** ——
+`dsh-client-modules/lib/client.js` 中 `if (dependency !== void 0) await this.arriveGraphRow(...)`，
+缺失项被**静默跳过**。因此这一失效声明不会报错，只会让客户端半的**装载顺序失去保障**，
+表现为项目管理/结果交付窗口偶发加载不出来，且极难定位。
+
+**修复**：改为声明真实提供方（按客户端半实际使用的 slot 反查）：
+
+| 用途 | 应注入的包 |
+|---|---|
+| `ctx.slots` 服务本身 | `@deepseek-ai/dsh-client-ui-renderer`（`class Slots extends Service`，`super(ctx, "slots")`） |
+| `conversation.view` | `@deepseek-ai/dsh-client-ui-conversation` |
+| `settings.section` | `@deepseek-ai/dsh-client-ui-settings-general` |
+| `sidebar.brand.mark` / `.name` | `@deepseek-ai/dsh-client-ui-sidebar` |
+
+**防回归**：新增 `lifecycle/platform/client-inject-covers-slots` 用例，
+自动解析 `lib/client.js` 里用到的每个 slot，反查其提供方包是否都在 `inject` 中 ——
+该字段今后不会再静默漂移。
+
+---
+
+## 五、0.1.5 新增能力中**尚未使用**的改进机会
+
+这些不是兼容性问题，是本插件可以更好利用平台的地方（详见改进建议）：
+
+| 能力 | 现状 | 潜在收益 |
+|---|---|---|
+| `output.presentationMeta` | **0 处使用** | 为直接调用提供可重放的呈现元数据 |
+| `presentResult` | **仅 1 处使用**（48 个工具中） | 其余 47 个工具的结果卡片仍是通用样式，可像官方 `bash` 工具那样提供终端/搜索/读取专用卡片 |
+| `presentCall` 的 `rawInput` / `location` / `content` | 部分使用 | `rawInput` 能让卡片展开时显示关键输入；`location` 支持编辑器跟随高亮 |
+| `finalizeContent(exec, result)` | **0 处使用** | 可在末次内容变换中统一处理失败输出（如离线任务错误透传） |
+| `exec.deferContext(ctx)` | **0 处使用** | 把「下一步提示」注入 agent 循环，替代目前在 `render` 文本里夹带引导 |
+| `exec.concludeTurn()` | **0 处使用** | 交付完成等终态标志 |
+
+---
+
+## 六、给版本升级的标准化动作
+
+```bash
+# 1) 升级 dsh 后先跑契约层（最快定位平台破坏点）
+npm run test:contract
+
+# 2) 红在 contract  → 读 dsh 包内 .d.ts 对齐签名，改 lib/index.js
+#    红在 integration → mock 与注册流程跟进
+#    红在 unit       → 插件自身逻辑问题
+
+# 3) 全量回归
+npm test
+
+# 4) 同步版本声明
+#    peerDependencies / devDependencies / dsh.client.inject
+```
+
+---
+
+## 七、复现方式
+
+```bash
+cd /Volumes/repo/ciao/github.com/DCS-Harness
+npm test                      # 65/65
+npm test -- --json            # 机器可读
+DSH_ROOT=/path/to/node_modules npm test   # 指定 dsh 安装根
+```
+
+环境：Node v22.21.1 · macOS · dsh 0.1.5-rc.1 · dsh-tools 0.1.5-rc.2

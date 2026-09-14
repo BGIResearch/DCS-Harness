@@ -110,7 +110,7 @@ export async function run({ filter, layer, json, quiet, bail } = {}) {
   let currentLayer = null;
 
   for (const c of selected) {
-    if (!quiet && c.layer !== currentLayer) {
+    if (!quiet && !json && c.layer !== currentLayer) {
       currentLayer = c.layer;
       process.stdout.write('\n' + colorize(useColor, COLORS.bold + COLORS.cyan, `── ${c.layer} ──`) + '\n');
     }
@@ -125,7 +125,7 @@ export async function run({ filter, layer, json, quiet, bail } = {}) {
     }
     const ms = Date.now() - t0;
     results.push({ layer: c.layer, id: c.id, title: c.title, status, ms, error });
-    if (!quiet) {
+    if (!quiet && !json) {
       const tag = status === 'pass'
         ? colorize(useColor, COLORS.green, 'PASS')
         : colorize(useColor, COLORS.red, 'FAIL');
