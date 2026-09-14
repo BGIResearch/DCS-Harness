@@ -12,19 +12,32 @@
 `lib/audit.js` 的 `rm -rf` 检测因 `\b` 边界误用而漏检 `rm -rf /`、`rm -rf ~`，
 同时误报 `rm -f`（无递归）。已修复并加双向断言（危险集 9/9 命中、安全集 6/6 无误报）。
 
-**建议继续加固**：当前规则集按正则逐条匹配，仍有盲区。建议补充：
+**已继续加固** ✅ —— 原先 7 类破坏性操作**完全漏检**，现已全部补齐：
 
-| 盲区 | 例子 | 建议 |
+| 盲区 | 例子 | 现分级 |
 |---|---|---|
-| 变量间接 | `T=/; rm -rf $T` | 对 `rm -rf $VAR` 报 high（无法静态求值即视为危险） |
-| 通配符叠加 | `rm -rf /*`、`rm -rf ..` | 补 `/*`、`..`、`$PWD` 模式 |
-| 管道/子壳 | `echo x \| xargs rm -rf` | 检测 `xargs rm` |
-| find -delete | `find / -delete` | 新增规则 |
-| 重定向覆盖 | `> /etc/passwd` | 新增规则 |
-| dd 写盘 | `dd of=/dev/sda` | 已有 `dd if=.*of=/dev/`，但 `dd of=`（无 if）漏 |
+| 通配符叠加根路径 | `rm -rf /*` | critical |
+| 上级目录 | `rm -rf ..` | critical |
+| 变量间接 | `rm -rf $VAR`（变量本身即目标） | high |
+| xargs 转发 | `echo x \| xargs rm -rf` | high |
+| find 直接删除 | `find / -delete` | high |
+| dd 写裸设备（无 `if`） | `dd of=/dev/sda` | critical |
+| 重定向覆盖系统文件 | `> /etc/passwd` | critical |
 
-并可引入「审计结果分级聚合」：出现任一 `critical` 时，`dcs_audit_script` 应明确
-返回「不建议执行」的结论字段，而不是只列 findings 让调用方自己判断。
+同时把**绝对路径删除按危险度分级**，兼顾安全与可用性：
+
+```
+rm -rf /                      → critical（根目录）
+rm -rf /data|/work|/Files|... → high    （挂载/工作区）
+rm -rf /tmp/x                 → medium  （临时目录）
+```
+
+并**消除误报**（误报会造成告警疲劳，最终让人忽略真正的 critical，与安全目标相悖）：
+`rm -rf $WORKDIR/tmp`、`$WORKDIR/$SAMPLE/tmp` 等生信脚本常规清理不再报 high
+（仅当变量**单独构成**删除目标时才告警）。11 个真实生信脚本写法零 critical/high 误报。
+
+**仍建议**：引入「审计结论字段」——出现任一 `critical` 时，`dcs_audit_script`
+应明确返回「不建议执行」的结构化结论，而不是只列 findings 让调用方自己判断。
 
 ### 2. 命令注入面：`terminal_exec` 的 shell 拼接
 

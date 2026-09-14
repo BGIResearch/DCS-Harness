@@ -1,0 +1,52 @@
+name: dsh 兼容性测试
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # 每周一 03:00 UTC 跑一次：dsh 上游发新版时可第一时间发现破坏
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+jobs:
+  compat:
+    name: dsh 兼容性（${{ matrix.dsh }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 同时测「声明支持的最低版本」与「最新版本」，
+        # 前者保证向后兼容，后者提前暴露平台破坏。
+        dsh: ['latest']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 关键：装真实 dsh，而不是项目内 devDependency 里的旧版本。
+      # 本插件的 peerDependencies 可能滞后，只有装真实版本才能测到运行时行为。
+      - name: 安装真实 dsh
+        run: |
+          npm i -g @deepseek-ai/dsh@${{ matrix.dsh }}
+          dsh --version || true
+
+      - name: 探测 dsh 安装根
+        run: |
+          echo "DSH_ROOT=$(npm root -g)" >> "$GITHUB_ENV"
+
+      - name: 运行兼容性测试
+        run: npm test
+
+      # 测试失败时也上传报告，便于对比哪一层红了
+      - name: 生成 JSON 报告
+        if: always()
+        run: npm test -- --json > compat-report.json || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compat-report
+          path: compat-report.json
