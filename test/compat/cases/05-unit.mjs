@@ -148,6 +148,84 @@ test('unit', 'audit/absolute-path-severity-grading', '绝对路径删除按危�
   assert(sevOf('rm -rf /tmp/scratch') <= 1, 'rm -rf /tmp/scratch 不应为 high/critical（避免告警疲劳）');
 });
 
+test('unit', 'audit/flags-data-destruction', 'audit 覆盖数据破坏类操作（截断/擦除/写满磁盘）', async () => {
+  const { auditScript } = await mod('audit.js');
+  const danger = [
+    'truncate -s 0 data.bam',           // 数据文件清零
+    'truncate -s 0 /data/raw.fastq',
+    'shred -u /data/x.bam',             // 不可逆擦除
+    'cat /dev/urandom > /data/f',       // 写满磁盘
+    'cp /dev/zero /data/disk',
+    'dd if=/dev/zero of=/data/fill',
+  ];
+  const missed = danger.filter((c) => {
+    const f = auditScript(c, 'shell').findings;
+    return f.filter((x) => x.severity === 'critical' || x.severity === 'high').length === 0;
+  });
+  assertEqual(missed.length, 0, `未识别的数据破坏操作: ${JSON.stringify(missed)}`);
+});
+
+test('unit', 'audit/flags-credential-exposure', 'audit 覆盖凭据泄露与外传风险', async () => {
+  const { auditScript } = await mod('audit.js');
+  const danger = [
+    'cat ~/.ssh/id_rsa',
+    'cat /root/.aws/credentials',
+    'ssh-keygen -f /root/.ssh/id_rsa -N ""',
+    'nc -l 4444 | bash',
+    'iptables -F',
+    'chown -R root:root /',
+  ];
+  const missed = danger.filter((c) => {
+    const f = auditScript(c, 'shell').findings;
+    return f.filter((x) => x.severity === 'critical' || x.severity === 'high').length === 0;
+  });
+  assertEqual(missed.length, 0, `未识别的凭据/外泄风险: ${JSON.stringify(missed)}`);
+});
+
+test('unit', 'audit/no-false-positive-on-common-bioinformatics', '常见生信写法不误报 critical/high', async () => {
+  const { auditScript } = await mod('audit.js');
+  // 这些是真实生信脚本里的常规写法；误报会造成告警疲劳，
+  // 最终让人忽略真正的 critical —— 与安全目标相悖。
+  const safe = [
+    'truncate -s 0 $WORKDIR/log.txt',        // 清空日志（常规）
+    'shred --version',                        // 纯查询
+    'truncate --help',
+    'dd if=input.bam of=sub.bam bs=1M count=10',
+    'dd if=/dev/zero of=$WORKDIR/test.img bs=1M count=1',
+    'cp /dev/null $WORKDIR/out.txt',
+    'chmod -R 755 $WORKDIR',
+    'chown -R $USER:$GROUP .',
+    'while read -r line; do echo "$line"; done < input.txt',
+    'for f in *.bam; do samtools index "$f"; done',
+    'curl -O https://example.com/ref.fa',
+    'wget -q https://example.com/d.tar.gz -O d.tar.gz',
+    'cat /data/ref/genome.fa | head',
+    'service --status-all',
+    'nc -z localhost 8080',
+    'yes | conda install -y samtools',
+    'ls -l /tmp',
+    'mkdir -p $WORKDIR/out',
+  ];
+  const noise = [];
+  for (const cmd of safe) {
+    const f = auditScript(cmd, 'shell').findings;
+    const hi = f.filter((x) => x.severity === 'critical' || x.severity === 'high');
+    if (hi.length > 0) noise.push(`${cmd} → ${hi.map((x) => x.severity).join(',')}`);
+  }
+  assertEqual(noise.length, 0, `以下生信常规写法被误报为 critical/high: ${noise.join('; ')}`);
+});
+
+test('unit', 'audit/truncate-severity-by-target', 'truncate -s 0 按目标类型分级（数据文件 high / 日志 medium）', async () => {
+  const { auditScript } = await mod('audit.js');
+  const sevOf = (cmd) => {
+    const order = { critical: 3, high: 2, medium: 1, low: 0, info: 0 };
+    return auditScript(cmd, 'shell').findings.reduce((m, f) => Math.max(m, order[f.severity] || 0), 0);
+  };
+  assertEqual(sevOf('truncate -s 0 raw.bam'), 2, '作用于数据文件应为 high');
+  assert(sevOf('truncate -s 0 $WORKDIR/log.txt') <= 1,
+    '作用于普通日志文件不应为 high（避免告警疲劳）');
+});
+
 test('unit', 'audit/flags-hardcoded-secret', 'audit 能识别硬编码密钥', async () => {
   const { auditScript } = await mod('audit.js');
   const r = auditScript('export API_KEY="sk-abcdefghijklmnopqrstuvwxyz123456"\n', 'shell');
