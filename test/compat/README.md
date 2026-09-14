@@ -27,11 +27,11 @@ slot 契约。dsh 处于 `0.1.x-rc` 快速迭代期，这些契约随时可能�
 
 | 层 | 例数 | 回答什么问题 | 依赖 dsh |
 |---|---|---|---|
-| `unit` | 19 | 插件自身纯逻辑对不对（atlas/audit/plan/report/tasks/projects/dcs-client） | 否 |
-| `contract` | 15 | 插件消费的**平台契约**还在不在、签名对不对 | 是 |
-| `integration` | 13 | 插件能否真的装载进去、工具全注册、渲染/呈现不崩 | 是 |
-| `lifecycle` | 20 | 配置/任务库/项目库的读写、权限、幂等、版本递增 | 部分 |
-| `meta` | 8 | **测试自身会不会空转**（断言/运行器/守卫阈值/覆盖完整性） | 是 |
+| `unit` | 27 | 插件自身纯逻辑对不对（atlas/audit/plan/report/tasks/projects/dcs-client） | 否 |
+| `contract` | 16 | 插件消费的**平台契约**还在不在、签名对不对 | 是 |
+| `integration` | 17 | 插件能否真的装载进去、工具全注册、渲染/呈现不崩 | 是 |
+| `lifecycle` | 21 | 配置/任务库/项目库的读写、权限、幂等、版本递增 | 部分 |
+| `meta` | 14 | **测试自身会不会空转**（断言/运行器/守卫阈值/覆盖完整性） | 是 |
 | `upgrade` | 8 | 会话格式迁移链：旧版本可迁移、新版本明确拒绝、损坏可诊断 | 是 |
 | `frozen` | 5 | 冻结参数不可变性：工具不得原地修改入参（历史 bug 防复发） | 是 |
 | `e2e` | 5 | **真实 dcs CLI 调用**（默认跳过）：登录态、二进制解析、**命令面存在性**、只读任务列表 | 是 |
@@ -39,8 +39,9 @@ slot 契约。dsh 处于 `0.1.x-rc` 快速迭代期，这些契约随时可能�
 | `http` | 8 | 客户端/服务端路由契约 + **真实调用 handler** 验证响应 | 否 |
 | `consistency` | 11 | 内部常量与引用自洽（专家/模型/技能/区域/工具名） | 否 |
 | `embedded` | 4 | 内嵌 Python 片段语法校验（容器内才暴露的错误提前到测试期） | 否 |
+| `internals` | 22 | lib/index.js 内部**纯函数**（未导出但承载实质逻辑） | 否 |
 
-合计 **140 例**。
+合计 **164 例**。
 
 分层价值：**失败位置直接指向根因**。`unit` 红 = 插件自身 bug；`contract` 红 = dsh 平台变了；
 `integration` 红 = 装载/注册环节被破坏；`lifecycle` 红 = 本地状态管理回归；
@@ -201,7 +202,28 @@ DCS_E2E=1 npm run test:e2e     # 需已登录的 DCS 环境（dcs 二进制 + �
 >    （如 `` `dcs task run` ``），混入统计后恒为奇数，导致误报。
 >    改用 `node --check` + 实际 import。
 
-### 13. 元测试：防止测试网自身空转
+### 13. 内部纯函数（覆盖率的最后一公里）
+
+`lib/index.js` 有 222 个函数，实测覆盖率仅 36% —— 大多数未覆盖的是工具
+`execute` 处理器（需真实 DCS 环境，无法在测试期跑）。但其中有一批**纯函数**
+承载实质判断逻辑，却因「藏在 4700 行模块内部、未导出」而长期零覆盖。
+
+`internals` 层用**从源码抽取函数体**（花括号配对 + 跳过字符串/正则/注释）
+在测试内独立求值，覆盖：
+
+- `isSawCommand`：SAW 工具识别（含绝对路径/链式/bash -c 包装与边界）
+- `shq`：shell 转义 —— **用真实 shell 执行其输出**验证可还原且无注入副作用
+- `safeServeName`：路径穿越防护（15 种攻击样本全部拒绝）
+- `extractMountFiles` / `toMountList`：从中文/英文句子中精确分离 `/Files/` 路径
+- `parseTaskIdsFromResult`：5 种任务 ID 返回形态
+- `enrichOfflineError` / `sawEnvPrefix` / `textOf` / `termStdout` /
+  `taskEvidenceText` / `scoreText` / `taskTerms`
+
+**这些函数里抓出了 2 个真实缺陷**（中文污染挂载路径、下划线文件名被误拒），
+详见 `COMPATIBILITY-REPORT.md`。附「抽取机制自检」用例：函数改名时立即报错，
+而不是静默跳过（否则整层会变成空转）。
+
+### 14. 元测试：防止测试网自身空转
 `meta` 层用**变异测试**证明关键断言真的能抓到违规：
 - 断言库自检：`assert(false)` / `assertEqual(1,2)` / `assertIncludes('abc','zzz')` 必须抛错；
 - 运行器自检：注册一个刻意失败的用例，确认运行器判为 `failed` 且保留失败原因；
