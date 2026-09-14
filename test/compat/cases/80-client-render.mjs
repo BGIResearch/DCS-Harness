@@ -156,6 +156,32 @@ function validateTree(node, path = 'root', depth = 0) {
   return problems;
 }
 
+/**
+ * 取出客户端半的内部组件（如 ChartView）。
+ *
+ * 客户端半只导出 { apply, inject }，组件是闭包内私有声明；
+ * 直接改产物导出会污染发布物，因此这里在测试内**重新求值**客户端源码：
+ * 剥掉 __ModuleLoader__ 信封，注入 require/React/h/module 后返回目标组件。
+ * 仅用于测试，不修改 lib/client.js。
+ */
+function extractInternalComponents(names) {
+  const src = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8');
+  const body = src
+    .replace(/^window\.__ModuleLoader__\.load\(\{ id: [^)]*factory: \(require\) => \{ var module = \{ exports: \{\} \}; var exports = module\.exports;/, '')
+    .replace(/\nreturn module\.exports; \} \}\);\s*$/, '');
+  const shim = makeReactShim();
+  const moduleStub = { exports: {} };
+  const fn = new Function('require', 'React', 'h', 'module', 'exports',
+    body + `\nreturn { ${names.join(', ')} };`);
+  return {
+    components: fn(
+      (n) => { if (n === 'react') return shim.React; throw new Error(`未预期的依赖: ${n}`); },
+      shim.React, shim.React.createElement, moduleStub, moduleStub.exports,
+    ),
+    hooks: shim.hooks,
+  };
+}
+
 // ---------------------------------------------------------------- 用例
 
 const SKIP_REASON = '需要 React hook 运行时替身';
@@ -262,4 +288,50 @@ test('client-render', 'render/error-boundary-wraps-views', '所有视图注册�
   }
   assertEqual(unwrapped.length, 0,
     `以下视图未用 guarded() 包裹错误边界（渲染抛错会导致整页白屏）: ${unwrapped.join(', ')}`);
+});
+
+
+test('client-render', 'render/all-chart-types-render', '全部图表类型都能渲染（含未知类型兜底）', async () => {
+  // ChartView 按 chart.type 分发到各图表组件。若某个声明支持的类型没有分支，
+  // 用户看到的是一张空白/报错卡片。这里逐个类型实际渲染。
+  const ALL_TYPES = [
+    'bar', 'line', 'pie', 'scatter', 'heatmap', 'stat', 'table', 'summary',
+    'html', 'iframe', 'link', 'structure3d', 'image', 'video', 'audio',
+  ];
+  const { components, hooks } = extractInternalComponents(['ChartView']);
+  const ChartView = components.ChartView;
+  assertEqual(typeof ChartView, 'function', '应取到 ChartView');
+
+  const problems = [];
+  for (const type of [...ALL_TYPES, 'totally-unknown-type']) {
+    hooks.cursor = 0; hooks.states.length = 0; hooks.refs.length = 0;
+    try {
+      const el = ChartView({ data: { type, data: [], title: 'T', caption: 'C' } });
+      if (!el) { problems.push(`${type}: 返回空（应至少有兜底卡片）`); continue; }
+      const p = validateTree(el, type);
+      problems.push(...p);
+    } catch (e) {
+      problems.push(`${type}: ${e.message}`);
+    }
+  }
+  assertEqual(problems.length, 0,
+    `${problems.length} 个图表类型渲染异常:\n${problems.slice(0, 10).join('\n')}`, problems);
+});
+
+test('client-render', 'render/chart-types-match-declared', 'ChartView 覆盖工具 schema 声明的全部图表类型', async () => {
+  // 防止「schema 说有某类型、UI 却不认识」的静默不一致。
+  const idxSrc = readFileSync(join(ROOT, 'lib', 'index.js'), 'utf8');
+  const docM = idxSrc.match(/bar\/line\/pie\/scatter\/heatmap\/stat\/table\/summary\/image\/video\/audio\/iframe\/link\/html\/structure3d/);
+  assert(docM, '应从工具 schema 描述中解析到图表类型清单');
+  const declared = new Set(docM[0].split('/'));
+
+  const cliSrc = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8');
+  const cvStart = cliSrc.indexOf('function ChartView');
+  assert(cvStart > 0, '应找到 ChartView');
+  const cv = cliSrc.slice(cvStart, cliSrc.indexOf('function DeliveryView', cvStart));
+  const handled = new Set([...cv.matchAll(/chart\.type === "([a-z0-9]+)"/g)].map((m) => m[1]));
+
+  const missing = [...declared].filter((t) => !handled.has(t));
+  assertEqual(missing.length, 0,
+    `以下类型在 schema 中声明但 ChartView 未处理: ${missing.join(', ')}（用户会看到兜底卡片）`);
 });
