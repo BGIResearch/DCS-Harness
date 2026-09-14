@@ -5,17 +5,30 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   test, assert, assertEqual, assertIncludes, ROOT,
-  findDshRoot, dshModulesDir, pkgJson, importDsh, readDshFile,
+  findDshRoot, dshModulesDir, pkgJson, importDsh,
 } from '../lib/harness.mjs';
 
 const DSH_ROOT = findDshRoot();
 const MODS = dshModulesDir(DSH_ROOT);
 
-/** 解析 @deepseek-ai/<pkg> 的 package.json（在 modules dir 与顶层 root 两处查找）。 */
+/**
+ * 解析 @deepseek-ai/<pkg> 的 package.json（在 modules dir 与顶层 root 两处查找）。
+ * 未找到时抛错并**列出尝试过的路径** —— 与 importDsh 一致：
+ * 静默返回 null 会让下游报出误导性的「缺字段」而非「包不存在」。
+ */
 function dshPkgOf(pkg) {
   const cands = [join(MODS, '@deepseek-ai', pkg), join(DSH_ROOT, '@deepseek-ai', pkg)];
-  for (const c of cands) if (existsSync(join(c, 'package.json'))) return pkgJson(c);
-  return null;
+  const tried = [];
+  for (const c of cands) {
+    const f = join(c, 'package.json');
+    tried.push(f);
+    if (existsSync(f)) {
+      const j = pkgJson(c);
+      if (j && typeof j === 'object') return j;
+      throw new Error(`无法解析 ${f}（JSON 损坏？）`);
+    }
+  }
+  throw new Error(`未找到 @deepseek-ai/${pkg}；查找过:\n  ${tried.join('\n  ')}`);
 }
 
 /** 解析 @deepseek-ai/<pkg> 的目录（用于存在性检查）。 */
@@ -24,7 +37,17 @@ function dshDirOf(pkg) {
   for (const c of cands) if (existsSync(c)) return c;
   return null;
 }
-const PLUGIN_PKG = pkgJson(ROOT) || {};
+// 显式校验而非静默退化：pkgJson 对「文件缺失」与「JSON 损坏」都返回 null，
+// `|| {}` 会让下游断言以误导性的方式失败（如「缺 dsh.compat」而非「package.json 坏了」）。
+const PLUGIN_PKG = (() => {
+  const p = pkgJson(ROOT);
+  if (!p || typeof p !== 'object' || !p.name) {
+    throw new Error(
+      `无法解析 ${join(ROOT, 'package.json')}（文件缺失或 JSON 损坏）—— `
+      + `后续契约用例将全部失去依据，请先修复 package.json`);
+  }
+  return p;
+})();
 
 function requireDshRoot() {
   assert(DSH_ROOT, '未找到 dsh 安装目录；请设置 DSH_ROOT 或把 dsh 放到 PATH');
