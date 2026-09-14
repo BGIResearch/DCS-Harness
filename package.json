@@ -42,7 +42,14 @@
   "homepage": "https://github.com/BGIResearch/DCS-Harness#readme",
   "scripts": {
     "check": "node scripts/check-hooks.cjs",
-    "precommit": "npm run check"
+    "precommit": "npm run check",
+    "test": "node test/compat/run.mjs",
+    "test:compat": "node test/compat/run.mjs",
+    "test:compat:json": "node test/compat/run.mjs --json",
+    "test:unit": "node test/compat/run.mjs -l unit",
+    "test:contract": "node test/compat/run.mjs -l contract",
+    "test:integration": "node test/compat/run.mjs -l integration",
+    "test:lifecycle": "node test/compat/run.mjs -l lifecycle"
   },
   "dependencies": {},
   "dsh": {
