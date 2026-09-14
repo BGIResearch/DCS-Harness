@@ -81,11 +81,24 @@ function checkIndex() {
 }
 
 function checkSyntax() {
-  for (const f of ['lib/client.js', 'lib/index.js']) {
+  // ⚠ 历史缺陷：原来只硬编码检查 lib/client.js 与 lib/index.js 两个文件，
+  // 而 lib/ 下共有 9 个模块 —— atlas/audit/plan/projects/report/tasks
+  // 等 6 个**从未被语法检查覆盖**，其中的语法错误会直接随包发布。
+  // 现改为扫描 lib/ 下全部 .js 文件。
+  const libDir = path.join(root, 'lib');
+  if (!fs.existsSync(libDir)) return;
+  const files = fs.readdirSync(libDir).filter((f) => f.endsWith('.js'));
+  if (files.length === 0) {
+    errors.push('lib/ 下未找到任何 .js 文件（路径或结构异常）');
+    return;
+  }
+  for (const f of files) {
+    const rel = path.join('lib', f);
     try {
-      execSync(`node --check ${f}`, { cwd: root, stdio: 'pipe' });
+      execSync(`node --check ${JSON.stringify(rel)}`, { cwd: root, stdio: 'pipe' });
     } catch (e) {
-      errors.push(`${f}: 语法错误`);
+      const detail = String((e && e.stderr) || '').split('\n').filter(Boolean).slice(-1)[0] || '';
+      errors.push(`${rel}: 语法错误${detail ? ' —— ' + detail.slice(0, 160) : ''}`);
     }
   }
 }

@@ -212,6 +212,61 @@ test('meta', 'meta/loop-assertions-have-nonempty-source', '来源集合驱动的
     + problems.join('\n  '));
 });
 
+test('meta', 'meta/static-check-covers-all-lib-modules', 'check-hooks 的语法检查覆盖 lib 下全部模块', async () => {
+  // 教训：check-hooks.cjs 的 checkSyntax 原来硬编码只查 2 个文件
+  // （client.js / index.js），而 lib/ 下有 9 个模块 —— 其余 6 个
+  // （atlas/audit/plan/projects/report/tasks）的语法错误会直接随包发布。
+  //
+  // 本守卫：向每个 lib 模块注入语法错误，确认 check 能报出该文件。
+  // 为避免改动工作区产物，在**临时副本**上执行。
+  const { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync, mkdirSync, copyFileSync } = await import('node:fs');
+  const { execFileSync } = await import('node:child_process');
+  const { tmpdir } = await import('node:os');
+
+  const libDir = join(ROOT, 'lib');
+  const modules = readdirSync(libDir).filter((f) => f.endsWith('.js'));
+  assert(modules.length > 0, 'lib/ 下应有 .js 模块');
+
+  const dir = mkdtempSync(join(tmpdir(), 'dcs-check-'));
+  try {
+    mkdirSync(join(dir, 'lib'), { recursive: true });
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    copyFileSync(join(ROOT, 'scripts', 'check-hooks.cjs'), join(dir, 'scripts', 'check-hooks.cjs'));
+    // ⚠ 必须一并复制 package.json：lib/*.js 是 **ESM**（项目 type: module）。
+    // 临时目录若缺 package.json，Node 会按 CommonJS 解析这些文件，
+    // 而 `node --check` 在该模式下的行为不同（对同一份非法代码可能静默返回 0），
+    // 导致本用例把所有模块误判为「未被覆盖」。这是踩过的坑。
+    copyFileSync(join(ROOT, 'package.json'), join(dir, 'package.json'));
+    // 全部模块先原样拷入
+    for (const f of modules) copyFileSync(join(libDir, f), join(dir, 'lib', f));
+
+    const missed = [];
+    for (const f of modules) {
+      const target = join(dir, 'lib', f);
+      const original = readFileSync(target, 'utf8');
+      writeFileSync(target, original + '\nfunction __broken_syntax( {\n', 'utf8');
+      let reported = false;
+      try {
+        execFileSync(process.execPath, [join(dir, 'scripts', 'check-hooks.cjs')], {
+          cwd: dir, stdio: 'pipe', env: { ...process.env, CHECK_ROOT: dir },
+        });
+      } catch (e) {
+        // ⚠ check-hooks 把错误写到 **stderr**（console.error），不是 stdout。
+        // 早期版本只读 e.stdout，导致所有模块都被误判为「未被覆盖」。
+        reported = String((e && e.stderr) || '').includes(f)
+          || String((e && e.stdout) || '').includes(f);
+      }
+      writeFileSync(target, original, 'utf8');
+      if (!reported) missed.push(f);
+    }
+
+    assertEqual(missed.length, 0,
+      `以下 lib 模块的语法错误未被 check-hooks 捕获（需纳入语法检查范围）: ${missed.join(', ')}`);
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
 // ---------------------------------------------------------------- 运行器契约
 
 test('meta', 'meta/dsh-root-invalid-is-fatal', 'DSH_ROOT 无效时明确报错，不静默回退', async () => {
