@@ -166,3 +166,96 @@ test('consistency', 'consistency/regions-referenced-in-hints', '区域提示中�
   assert(dangling.length <= 2,
     `提示词提到的区域节点多数不在区域表中: ${dangling.join(', ')}`);
 });
+
+
+// ---------------------------------------------------------------- 提示词工具引用
+
+test('consistency', 'consistency/prompt-tool-references-resolve', 'systemPrompt 提到的工具都已注册', async () => {
+  // 真实缺陷（本层首次运行时发现）：systemPrompt 里写着
+  //   dcs_wdl_list / dcs_wdl_plan / dcs_wdl_check_parameter /
+  //   dcs_wdl_fill_parameter / dcs_wdl_submit_task
+  // 共 5 个工具，但插件实际注册的是 dcs_workflow_search/info/run ——
+  // 这些名字是**从外部 dcs-workflow-skill 文档抄来的**，本插件并未实现。
+  // 后果：agent 会按提示词去调用不存在的工具，反复失败且难以归因。
+  //
+  // 该缺陷不会报错、不会被任何其它层发现（提示词只是字符串），
+  // 因此必须有这条静态引用校验。
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const tools = new Set();
+  const sections = [];
+  const ctx = {
+    tools: { register: (d) => { tools.add(d.name); return () => {}; } },
+    systemPrompt: {
+      section: (s) => {
+        let body = '';
+        try { body = s.text(); } catch { body = ''; }
+        sections.push(body);
+        return () => {};
+      },
+    },
+    webServer: {
+      register: () => () => {}, registerUpgrade: () => () => {},
+      registerFallback: () => () => {}, tapIndex: () => () => {},
+    },
+    sessions: { get: () => null }, tokenMeter: {}, sessionPersistence: {},
+    get: () => undefined, effect: (f) => (typeof f === 'function' ? f() : undefined),
+    on: () => () => {}, logger: { debug() {}, info() {}, warn() {}, error() {} },
+  };
+  await mod.apply(ctx);
+  assert(tools.size > 0, '应注册工具');
+  assert(sections.length > 0, '应注入 systemPrompt');
+
+  const all = sections.join('\n');
+  const mentioned = new Set([...all.matchAll(/\bdcs_[a-z_]+/g)].map((m) => m[0]));
+
+  // 白名单：这些是**参数/字段名或取值格式**，不是工具名，允许出现在提示词中。
+  const NON_TOOL = new Set([
+    'dcs_task_ids',   // dcs_run_update 的参数
+    'dcs_cloud',      // 品牌名（DCS Cloud 写作 dcs_cloud 的场景）
+    'dcs_pat_',       // PAT 令牌前缀（形如 dcs_pat_...）
+  ]);
+
+  // 只检查「看起来像工具名」的标识符：以 dcs_ 开头且不含尾部下划线
+  // （尾部下划线通常表示前缀/格式，如 dcs_pat_...），
+  // 且长度合理。这能避免把取值格式误判为工具。
+  const looksLikeTool = (x) => /^dcs_[a-z0-9]+(?:_[a-z0-9]+)*$/.test(x);
+
+  const dangling = [...mentioned]
+    .filter(looksLikeTool)
+    .filter((x) => !tools.has(x) && !NON_TOOL.has(x));
+  assertEqual(dangling.length, 0,
+    `systemPrompt 提到但未注册的工具（agent 会调用不存在的工具）: ${dangling.join(', ')}`);
+});
+
+test('consistency', 'consistency/tool-descriptions-references-resolve', '工具描述里提到的工具都已注册', async () => {
+  // 同上，但检查工具自身的 description（也会被模型读到）。
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const tools = new Map();
+  const ctx = {
+    tools: { register: (d) => { tools.set(d.name, d); return () => {}; } },
+    systemPrompt: { section: () => () => {} },
+    webServer: {
+      register: () => () => {}, registerUpgrade: () => () => {},
+      registerFallback: () => () => {}, tapIndex: () => () => {},
+    },
+    sessions: { get: () => null }, tokenMeter: {}, sessionPersistence: {},
+    get: () => undefined, effect: (f) => (typeof f === 'function' ? f() : undefined),
+    on: () => () => {}, logger: { debug() {}, info() {}, warn() {}, error() {} },
+  };
+  await mod.apply(ctx);
+
+  const NON_TOOL = new Set(['dcs_task_ids', 'dcs_cloud', 'dcs_pat_']);
+  const looksLikeTool = (x) => /^dcs_[a-z0-9]+(?:_[a-z0-9]+)*$/.test(x);
+  const problems = [];
+  for (const [name, t] of tools) {
+    const desc = String(t.description || '');
+    for (const m of desc.matchAll(/\bdcs_[a-z_]+/g)) {
+      const ref = m[0];
+      if (ref === name) continue;               // 自引用
+      if (!looksLikeTool(ref)) continue;         // 取值格式/前缀，跳过
+      if (tools.has(ref) || NON_TOOL.has(ref)) continue;
+      problems.push(`${name} 的描述引用了不存在的工具 ${ref}`);
+    }
+  }
+  assertEqual(problems.length, 0, problems.join('; '));
+});
