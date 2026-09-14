@@ -10,7 +10,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { test, assert, assertEqual, ROOT } from '../lib/harness.mjs';
+import { test, assert, assertEqual, assertIncludes, ROOT } from '../lib/harness.mjs';
 
 const SRC = () => readFileSync(join(ROOT, 'lib', 'index.js'), 'utf8');
 
@@ -24,19 +24,71 @@ function extractFunction(name, deps = {}) {
   const m = src.match(re);
   assert(m, `未找到函数 ${name}（可能已改名或移动 —— 请更新本测试）`);
 
+  // ⚠ 不能用「数花括号」找函数结尾：函数体内的**正则字符类**可能包含 `}`
+  //    （如 extractMountFiles 的 /[\])}\u3001…]*$/g），会让计数提前归零，
+  //    截出半截函数 → 求值报 "Unexpected token ')'"。
+  //    正确做法：按行扫描，逐行跟踪深度，并**跳过字符串/正则/模板/注释**中的括号。
   const start = src.indexOf(m[1]);
+  const lines = src.slice(start).split('\n');
   let depth = 0;
-  let end = -1;
-  for (let k = start + m[1].length - 1; k < src.length; k++) {
-    if (src[k] === '{') depth++;
-    else if (src[k] === '}') { depth--; if (depth === 0) { end = k + 1; break; } }
-  }
-  assert(end > 0, `函数 ${name} 的花括号不配对`);
+  let endLine = -1;
 
-  const body = src.slice(start, end);
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
+    let inStr = null;        // ' " ` 之一
+    let inRegex = false;
+    let inLineComment = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      const prev = line[i - 1];
+      if (inLineComment) break;
+      if (inStr) {
+        if (c === '\\') { i++; continue; }          // 转义
+        if (c === inStr) inStr = null;
+        continue;
+      }
+      if (inRegex) {
+        if (c === '\\') { i++; continue; }
+        if (c === '[') { /* 字符类内 } 不计数 */ }
+        if (c === '/' && prev !== '\\') inRegex = false;
+        continue;
+      }
+      if (c === '/' && line[i + 1] === '/') { inLineComment = true; break; }
+      if (c === '/' && (prev === undefined || /[=(,:;[!&|?{}+\-*%<>~^\s]/.test(prev)) && line[i + 1] !== '=' ) {
+        inRegex = true; continue;                                 // 正则字面量起始
+      }
+      if (c === '"' || c === "'" || c === '`') { inStr = c; continue; }
+      if (c === '{') depth++;
+      else if (c === '}') { depth--; if (depth === 0) { endLine = li; break; } }
+    }
+    if (endLine >= 0) break;
+  }
+
+  // 若逐行扫描未收敛（极端情况），回退到朴素的字符计数
+  let body;
+  if (endLine >= 0) {
+    body = lines.slice(0, endLine + 1).join('\n');
+  } else {
+    let d = 0; let e = -1;
+    for (let k = start + m[1].length - 1; k < src.length; k++) {
+      if (src[k] === '{') d++;
+      else if (src[k] === '}') { d--; if (d === 0) { e = k + 1; break; } }
+    }
+    assert(e > 0, `函数 ${name} 的花括号不配对`);
+    body = src.slice(start, e);
+  }
+
+  // 校验：抽取结果必须能独立求值（否则说明截取有误，立即报错而非静默降级）
   const depNames = Object.keys(deps);
-  const factory = new Function(...depNames, `"use strict"; ${body}; return ${name};`);
-  return factory(...depNames.map((k) => deps[k]));
+  let factory;
+  try {
+    factory = new Function(...depNames, `"use strict"; ${body}; return ${name};`);
+  } catch (e) {
+    throw new Error(`抽取 ${name} 后无法求值（截取边界有误）: ${e.message} —— 抽取片段尾部: ${JSON.stringify(body.slice(-80))}`);
+  }
+  const fn = factory(...depNames.map((k) => deps[k]));
+  assertEqual(typeof fn, 'function', `${name} 抽取结果应为函数`);
+  return fn;
 }
 
 // ---------------------------------------------------------------- SAW 命令识别
@@ -177,6 +229,151 @@ test('internals', 'internals/enrichOfflineError-handles-empty', 'enrichOfflineEr
     assertEqual(typeof out, 'string', `enrich(${JSON.stringify(input)}) 应返回字符串`);
     assert(out.trim().length > 0, `enrich(${JSON.stringify(input)}) 不应返回空串（用户会看到空白错误）`);
   }
+});
+
+// ---------------------------------------------------------------- 媒体文件名安全
+
+test('internals', 'internals/safeServeName-blocks-traversal', 'safeServeName 拒绝全部路径穿越尝试', async () => {
+  const safeServeName = extractFunction('safeServeName');
+  // 这是服务端把文件名映射到本地目录用的守卫。若被绕过，
+  // 攻击者可用 `../` 读取交付缓存目录之外的任意文件。
+  const attacks = [
+    '../etc/passwd',
+    '..%2fetc',
+    '/etc/passwd',
+    'a/../../b',
+    '.',
+    '..',
+    '....//',
+    '....\\',
+    'foo/bar',
+    '%2e%2e',
+    'a\nb',            // 换行注入
+    '.hidden',           // 首字符是点
+    'a b',               // 空格
+    '',                  // 空
+    '.',                 // 仅点
+  ];
+  const allowed = attacks.filter((a) => safeServeName(a) !== null);
+  assertEqual(allowed.length, 0,
+    `safeServeName 放行了危险文件名（路径穿越/注入风险）: ${allowed.map((x) => JSON.stringify(x)).join(', ')}`);
+});
+
+test('internals', 'internals/safeServeName-allows-legit-names', 'safeServeName 放行正常文件名', async () => {
+  const safeServeName = extractFunction('safeServeName');
+  const legit = [
+    'file-0123456789abcdef0123.png',
+    'abc.jpg',
+    'a_b-c.d.e',
+    'File123.PDF',
+  ];
+  const rejected = legit.filter((f) => safeServeName(f) === null);
+  assertEqual(rejected.length, 0,
+    `safeServeName 误拒正常文件名（会导致交付图片无法访问）: ${rejected.join(', ')}`);
+});
+
+// ---------------------------------------------------------------- 挂载路径推导
+
+test('internals', 'internals/toMountList-dedupes-and-filters', 'toMountList 去重且只保留 /Files/ 真实路径', async () => {
+  const extractMountFiles = extractFunction('extractMountFiles');
+  const toMountList = extractFunction('toMountList', { extractMountFiles });
+
+  const out = toMountList('/Files/a.bam,/Files/a.bam , /Files/,', [
+    '输入文件 /Files/b.vcf 和 /Files/a.bam',
+    '无关文本',
+  ]);
+  const list = out ? out.split(',') : [];
+  assertEqual(new Set(list).size, list.length, `toMountList 未去重: ${out}`);
+  assertIncludes(out, '/Files/a.bam', '应保留 /Files/a.bam');
+  assertIncludes(out, '/Files/b.vcf', '应从 hint 中提取 /Files/b.vcf');
+  assert(!list.includes('/Files/'), '不应把裸 /Files/ 当作挂载路径（无意义）');
+});
+
+test('internals', 'internals/extractMountFiles-isolates-paths-from-prose', 'extractMountFiles 从中文/英文句子中精确分离路径', async () => {
+  // 真实缺陷（本层首次运行时发现）：原正则用 `\S*` 贪婪吞字符，
+  // 而中文句子没有 ASCII 空格，导致
+  //   "见 /Files/RawData/x.fq.gz，以及 /Files/ref/y.fa)。"
+  // 的第一段被匹配成 "/Files/RawData/x.fq.gz，以及"（含中文与后续文字）。
+  // 这类脏路径会作为 -m 挂载参数传给 `dcs task run`。
+  const extractMountFiles = extractFunction('extractMountFiles');
+
+  const cases = [
+    ['见 /Files/RawData/x.fq.gz，以及 /Files/ref/y.fa)。',
+      ['/Files/RawData/x.fq.gz', '/Files/ref/y.fa']],
+    ['mount /Files/a.bam, and /Files/b/c.vcf.',
+      ['/Files/a.bam', '/Files/b/c.vcf']],
+    ['仅 /Files/ref/genome.fa 一个。', ['/Files/ref/genome.fa']],
+    ['/Files/RawData/V350099495_L04_read_1.fq.gz',
+      ['/Files/RawData/V350099495_L04_read_1.fq.gz']],
+    ['无路径的句子', []],
+  ];
+
+  const problems = [];
+  for (const [text, expect] of cases) {
+    const got = extractMountFiles(text);
+    for (const e of expect) {
+      if (!got.includes(e)) problems.push(`${JSON.stringify(text)}: 缺少 ${e}（实际 ${JSON.stringify(got)}）`);
+    }
+    // 不得混入中文、空格或标点
+    const dirty = got.filter((p) => /[\u3000-\u9fff\s，。；、)]/.test(p));
+    if (dirty.length) problems.push(`${JSON.stringify(text)}: 路径混入文字/标点 ${JSON.stringify(dirty)}`);
+  }
+  assertEqual(problems.length, 0, problems.join('; '));
+});
+
+// ---------------------------------------------------------------- 任务 ID 解析
+
+test('internals', 'internals/parseTaskIdsFromResult-multi-shape', 'parseTaskIdsFromResult 兼容多种返回形态', async () => {
+  const parseTaskIdsFromResult = extractFunction('parseTaskIdsFromResult');
+  const check = (label, input, expect) => {
+    const got = parseTaskIdsFromResult(input);
+    for (const e of expect) {
+      assert(got.includes(e), `${label}: 应解析出 ${e}，实际 ${JSON.stringify(got)}`);
+    }
+  };
+  // 单对象
+  check('单 task_id', { data: { task_id: '2098662047145349121' } }, ['2098662047145349121']);
+  // taskId 驼峰
+  check('驼峰 taskId', { data: { taskId: '2098662047145349122' } }, ['2098662047145349122']);
+  // 数组
+  check('数组', { data: [{ task_id: '2098662047145349123' }, { id: '2098662047145349124' }] },
+    ['2098662047145349123', '2098662047145349124']);
+  // 文本兜底（宿主流：ID 在 stdout 里）
+  check('stdout 文本', { data: { stdout: 'submitted 2098662047145349125 ok' } }, ['2098662047145349125']);
+  // 空输入
+  assertEqual(parseTaskIdsFromResult(null).length, 0, 'null 应返回空数组');
+  assertEqual(parseTaskIdsFromResult({}).length, 0, '空对象应返回空数组');
+});
+
+test('internals', 'internals/parseTaskIdsFromResult-dedupes', 'parseTaskIdsFromResult 不产生重复 ID', async () => {
+  const parseTaskIdsFromResult = extractFunction('parseTaskIdsFromResult');
+  const got = parseTaskIdsFromResult({ data: { task_id: '2098662047145349121', stdout: '2098662047145349121' } });
+  assertEqual(new Set(got).size, got.length, `ID 有重复: ${JSON.stringify(got)}`);
+});
+
+// ---------------------------------------------------------------- SAW 环境前缀
+
+test('internals', 'internals/sawEnvPrefix-modes', 'sawEnvPrefix 按配置返回正确的环境初始化前缀', async () => {
+  const sawEnvPrefix = extractFunction('sawEnvPrefix');
+  // off：不应注入任何内容
+  assertEqual(sawEnvPrefix({ sawEnvMode: 'off' }), '', 'off 模式应返回空串');
+
+  // ldpath：应注入 LD_LIBRARY_PATH 且指向 <root>/anaconda/lib
+  const lp = sawEnvPrefix({ sawEnvMode: 'ldpath', sawRoot: '/opt/saw-8.2.2' });
+  assertIncludes(lp, '/opt/saw-8.2.2/anaconda/lib', 'ldpath 应包含 anaconda/lib 路径');
+
+  // source：应尝试 source env.sh
+  const sc = sawEnvPrefix({ sawEnvMode: 'source', sawRoot: '/opt/saw-8.2.2' });
+  assertIncludes(sc, 'env.sh', 'source 模式应引用 env.sh');
+
+  // auto：两者兼顾（env.sh 存在则 source，否则回退 LD_LIBRARY_PATH）
+  const au = sawEnvPrefix({ sawEnvMode: 'auto', sawRoot: '/opt/saw-8.2.2' });
+  assertIncludes(au, 'env.sh', 'auto 模式应包含 env.sh 判断');
+  assertIncludes(au, 'LD_LIBRARY_PATH', 'auto 模式应有 LD_LIBRARY_PATH 回退');
+
+  // 默认 root
+  const dflt = sawEnvPrefix({ sawEnvMode: 'ldpath' });
+  assertIncludes(dflt, '/opt/saw-8.2.2', '未指定 sawRoot 时应使用默认路径');
 });
 
 // ---------------------------------------------------------------- 抽取机制自检

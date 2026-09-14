@@ -107,6 +107,8 @@ test('embedded', 'embedded/heredoc-python-syntax', '内嵌 Python 片段语法�
 
 test('embedded', 'embedded/python-snippets-substantive', '内嵌 Python 片段都有实质内容（非空壳）', async () => {
   const snippets = extractHeredocPython();
+  // 前置守卫：提取不到片段时下面对 tooShort 的断言会恒真（空转）
+  assert(snippets.length > 0, '未提取到任何内嵌 Python 片段（提取规则可能失效，用例将空转）');
   const tooShort = [];
   for (const [i, code] of snippets.entries()) {
     const effective = neutralizeInterpolations(code)

@@ -183,7 +183,12 @@ test('meta', 'meta/loop-assertions-have-nonempty-source', '来源集合驱动的
 
       // 必须有「收集器 + for..of 循环 + length===0 断言」三件套
       const hasCollector = /const\s+(\w+)\s*=\s*\[\]/.test(p);
-      const forOf = p.match(/for\s*\(\s*const\s+\w+\s+of\s+([\w.$()\[\]]+)/);
+      // 支持两种形态：
+      //   for (const x of cases)               → 捕获 cases
+      //   for (const [a, b] of cases)          → 也应捕获 cases（不是 a/b）
+      // 早期版本对解构形态会误捕到解构出的变量名（如 expect），
+      // 进而把「const cases = [...]」这类字面量误判为动态来源（误报）。
+      const forOf = p.match(/for\s*\(\s*const\s+(?:\[[^\]]*\]|\w+)\s+of\s+([\w.$()\[\]]+)/);
       const zeroLen = /assertEqual\(\s*\w+\.length\s*,\s*0/.test(p);
       if (!hasCollector || !forOf || !zeroLen) continue;
 
