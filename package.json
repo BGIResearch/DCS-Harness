@@ -55,7 +55,8 @@
     "test:meta": "node test/compat/run.mjs -l meta",
     "test:matrix": "bash test/compat/matrix.sh",
     "test:e2e": "DCS_E2E=1 node test/compat/run.mjs -l e2e",
-    "test:client": "node test/compat/run.mjs -l client-render"
+    "test:client": "node test/compat/run.mjs -l client-render",
+    "test:http": "node test/compat/run.mjs -l http"
   },
   "dependencies": {},
   "dsh": {

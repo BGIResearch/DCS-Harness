@@ -4,9 +4,9 @@
 |---|---|
 | 被测插件 | `dsh-dcs-cloud` v2.15.0 |
 | 目标平台 | **dsh 0.1.5-rc.1**（运行中） / dsh-tools 0.1.5-rc.2 |
-| 测试模块 | `test/compat`（零依赖 ESM，115 例，九层） |
-| 结论 | ✅ **兼容**（115/115 通过，耗时 ~0.46s） |
-| 多版本实测 | ✅ **0.1.5-alpha.1 / 0.1.5-rc.1 / 0.1.5-rc.2 均 115/115 通过** |
+| 测试模块 | `test/compat`（零依赖 ESM，123 例，十层） |
+| 结论 | ✅ **兼容**（123/123 通过，耗时 ~1.5s） |
+| 多版本实测 | ✅ **0.1.5-alpha.1 / 0.1.5-rc.1 / 0.1.5-rc.2 均 123/123 通过** |
 | dcs CLI 实测 | ✅ **22 个插件调用的 dcs 子命令全部存在**（真实 CLI 校验） |
 | 修复缺陷 | **4 处真实缺陷**（审计安全 2 处 / 客户端装载 1 处 / 客户端崩溃隔离 1 处） |
 
@@ -264,6 +264,25 @@ workflow check_parameter/info/ls/plan/run/task_info/task_log/tasks
    须解析父命令帮助的 `Available Commands` 表。
 2. 不能笼统匹配 `['x','y']` —— schema 里的 `enum: ['analysis','workflow']` 会被误当命令；
    须逐行扫描 + 跟踪 schema 块深度 + 排除 enum。
+
+---
+
+## 五·补三、HTTP 接口契约（实测）
+
+客户端与服务端通过 `fetch("/api/dcs-cloud" + path)` 约定接口，**没有类型检查**。
+`http` 层静态比对两侧并真实调用 handler：
+
+```
+服务端路由 27 条  vs  客户端调用 16 处   → 全部一一对应，无重复注册
+真实调用（mock req/res）：
+  /v2/health   → 200 {"ok":true,"version":"2.15.0","time":...}
+  /v2/regions  → 200 {"ok":true,"regions":[...]}
+  /config      → 200 {"ok":true,"patSet":...,"patHint":"…c7d7",...}
+未知子路径     → 4xx 且正常结束响应（不会挂起连接）
+```
+
+**变异验证**：服务端把 `/v2/tokens` 改名为 `/v2/tokenz` 后，
+`http/client-calls-have-server-routes` 立即变红并指名 `client.js:849`。
 
 ---
 
