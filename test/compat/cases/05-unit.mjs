@@ -299,6 +299,73 @@ test('unit', 'report/generates-html', 'generateReport 产出 self-contained HTML
   }
 });
 
+// ---------------------------------------------------------------- report（HTML 转义）
+
+test('unit', 'report/markdown-escapes-html', '报告 Markdown 渲染会转义 HTML（防注入）', async () => {
+  // 真实缺陷（本轮发现）：report.js 的 inline() 直接对原文套 Markdown 标记，
+  // **未先转义 HTML** —— 报告正文里若出现 <script>（来自上游数据/文件内容/
+  // 模型输出）会被原样写入并执行；[x](javascript:...) 也会生成可点击的危险链接。
+  // 报告是自包含 HTML，用户会直接用浏览器打开，因此这是真实的 XSS 路径。
+  const { generateReport } = await mod('report.js');
+  const { mkdtempSync, readFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'rep-'));
+
+  try {
+    const out = await generateReport({
+      title: 'XSS 测试',
+      results: [
+        '## 含 HTML 的结果',
+        '<script>alert(1)</script>',
+        '<img src=x onerror=alert(1)>',
+        '[click](javascript:alert(1))',
+      ].join('\n'),
+      figures: [],
+    }, { outDir: dir });
+
+    const html = typeof out === 'string' ? readFileSync(out, 'utf8') : (out.html || readFileSync(out.path, 'utf8'));
+
+    // 1) 不得出现可执行的 <script>（转义后的 &lt;script&gt; 是允许的）
+    assert(!/<script[^>]*>alert/i.test(html),
+      '报告中出现了未转义的 <script>（XSS）');
+    // 2) 不得出现带 onerror 的 <img> 注入
+    assert(!/<img[^>]*onerror=/i.test(html),
+      '报告中出现了未转义的 onerror 属性（XSS）');
+    // 3) 危险协议的链接不得渲染为可点击的 <a href>
+    assert(!/<a[^>]*href="javascript:/i.test(html),
+      '报告中出现了 javascript: 链接（XSS）');
+    assert(!/<a[^>]*href="data:/i.test(html),
+      '报告中出现了 data: 链接（可能用于注入）');
+    // 4) 原始文本应仍然可见（转义而非丢弃）
+    assertIncludes(html, 'alert(1)', '转义后原文应仍可见（不应静默丢弃内容）');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('unit', 'report/markdown-keeps-legit-formatting', '报告 Markdown 渲染保留正常格式', async () => {
+  const { generateReport } = await mod('report.js');
+  const { mkdtempSync, readFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'rep2-'));
+  try {
+    const out = await generateReport({
+      title: 'T',
+      results: '## 标题\n\n**粗体** 与 *斜体* 与 `code`\n\n[docs](https://example.com)\n\n- 项目一\n- 项目二',
+      figures: [],
+    }, { outDir: dir });
+    const html = typeof out === 'string' ? readFileSync(out, 'utf8') : (out.html || readFileSync(out.path, 'utf8'));
+
+    assertIncludes(html, '<strong>粗体</strong>', '粗体应保留');
+    assertIncludes(html, '<em>斜体</em>', '斜体应保留');
+    assertIncludes(html, '<code>code</code>', '行内代码应保留');
+    assertIncludes(html, 'https://example.com', '正常链接应保留（且不被转义破坏）');
+    assert(/<a[^>]*href="https:\/\/example\.com"/.test(html), '正常 https 链接应渲染为 <a>');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------- tasks
 
 test('unit', 'tasks/path-and-lock', 'tasksPath 与 withTaskLock 可用且锁能串行化', async () => {
