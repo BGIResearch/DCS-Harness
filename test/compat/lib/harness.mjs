@@ -279,7 +279,12 @@ export async function importDsh(name, dshRoot = findDshRoot()) {
   const tried = [];
   const mods = dshModulesDir(dshRoot);
   const specs = [];
-  if (mods) specs.push(join(mods, name));
+  // 注意：必须指向入口文件，不能给目录路径 ——
+  // Node 的 ESM 解析器不支持「目录导入」（ERR_UNSUPPORTED_DIR_IMPORT）。
+  // 早期版本用 join(mods, name) 传目录，只在「项目内恰好能按裸名解析到依赖」时
+  // 才侥幸可用；在干净环境（无 node_modules）会整体失败。
+  if (mods) specs.push(join(mods, name, 'lib', 'index.js'));
+  if (mods) specs.push(join(mods, name));  // 兜底：某些包 exports 支持目录
   specs.push(name);
   for (const s of specs) {
     try {

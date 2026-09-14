@@ -17,9 +17,17 @@
 import { readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { run, findDshRoot } from './lib/harness.mjs';
+import { run, findDshRoot, ROOT, require as req } from './lib/harness.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+/** 插件的 peerDependencies（需宿主提供）—— 用于前置自检提示。 */
+const PLUGIN_PEER_DEPS = (() => {
+  try {
+    const { readFileSync } = req('node:fs');
+    return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).peerDependencies || {};
+  } catch { return {}; }
+})();
 
 const args = process.argv.slice(2);
 const opts = { filter: undefined, layer: undefined, json: false, quiet: false, bail: false };
@@ -72,6 +80,25 @@ const files = readdirSync(caseDir).filter((f) => f.endsWith('.mjs')).sort();
 for (const f of files) {
   await import(join(caseDir, f));
 }
+
+// 前置自检：插件的 peerDependencies（@deepseek-ai/dsh-tools / react）必须可解析，
+// 否则大量用例会以「Cannot find package」失败 —— 那是**环境未安装依赖**，
+// 不是插件不兼容。提前给出可操作的提示，避免误读报告。
+(function preflightPeerDeps() {
+  const { createRequire } = req('node:module');
+  const resolver = createRequire(join(ROOT, 'package.json'));
+  const missing = [];
+  for (const dep of Object.keys(PLUGIN_PEER_DEPS)) {
+    try { resolver.resolve(dep + '/package.json'); } catch { missing.push(dep); }
+  }
+  if (missing.length > 0) {
+    process.stderr.write(
+      `⚠ 依赖未安装: ${missing.join(', ')}\n`
+      + `  这些是插件的 peerDependencies，需由宿主 dsh 提供或在项目内安装。\n`
+      + `  请先执行 npm install（或 pnpm install）后重试；\n`
+      + `  相关用例会因「找不到包」失败，属环境问题而非兼容性缺陷。\n\n`);
+  }
+})();
 
 if (!opts.json && !opts.quiet) {
   process.stdout.write(`dsh 兼容性测试  (dsh 根: ${dshRoot})\n`);
