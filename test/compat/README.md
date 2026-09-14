@@ -3,7 +3,7 @@
 面向 **dsh 平台版本升级**的回归测试网。一条命令给出「插件是否还兼容当前 dsh」的明确结论。
 
 ```bash
-node test/compat/run.mjs                 # 全量（142 例，约 1.8s）
+node test/compat/run.mjs                 # 全量（183 例，约 2.0s）
 DSH_FAST=1 node test/compat/run.mjs      # 跳过探网端点（约 0.6s，本地快速迭代）
 node test/compat/run.mjs -l contract     # 只跑平台契约层
 node test/compat/run.mjs -k defineTool   # 关键词过滤
@@ -27,21 +27,21 @@ slot 契约。dsh 处于 `0.1.x-rc` 快速迭代期，这些契约随时可能�
 
 | 层 | 例数 | 回答什么问题 | 依赖 dsh |
 |---|---|---|---|
-| `unit` | 27 | 插件自身纯逻辑对不对（atlas/audit/plan/report/tasks/projects/dcs-client） | 否 |
+| `unit` | 29 | 插件自身纯逻辑对不对（atlas/audit/plan/report/tasks/projects/dcs-client） | 否 |
 | `contract` | 16 | 插件消费的**平台契约**还在不在、签名对不对 | 是 |
 | `integration` | 17 | 插件能否真的装载进去、工具全注册、渲染/呈现不崩 | 是 |
-| `lifecycle` | 21 | 配置/任务库/项目库的读写、权限、幂等、版本递增 | 部分 |
-| `meta` | 14 | **测试自身会不会空转**（断言/运行器/守卫阈值/覆盖完整性） | 是 |
+| `lifecycle` | 31 | 配置/任务库/项目库的读写、权限、幂等、版本递增 | 部分 |
+| `meta` | 15 | **测试自身会不会空转**（断言/运行器/守卫阈值/覆盖完整性） | 是 |
 | `upgrade` | 8 | 会话格式迁移链：旧版本可迁移、新版本明确拒绝、损坏可诊断 | 是 |
 | `frozen` | 5 | 冻结参数不可变性：工具不得原地修改入参（历史 bug 防复发） | 是 |
 | `e2e` | 5 | **真实 dcs CLI 调用**（默认跳过）：登录态、二进制解析、**命令面存在性**、只读任务列表 | 是 |
-| `client-render` | 6 | **真实渲染客户端组件**：hook 替身下渲染视图与全部图表类型 | 否 |
-| `http` | 8 | 客户端/服务端路由契约 + **真实调用 handler** 验证响应 | 否 |
+| `client-render` | 9 | **真实渲染客户端组件**：hook 替身下渲染视图与全部图表类型 | 否 |
+| `http` | 11 | 客户端/服务端路由契约 + **真实调用 handler** 验证响应 | 否 |
 | `consistency` | 11 | 内部常量与引用自洽（专家/模型/技能/区域/工具名） | 否 |
 | `embedded` | 4 | 内嵌 Python 片段语法校验（容器内才暴露的错误提前到测试期） | 否 |
 | `internals` | 22 | lib/index.js 内部**纯函数**（未导出但承载实质逻辑） | 否 |
 
-合计 **164 例**。
+合计 **183 例**。
 
 分层价值：**失败位置直接指向根因**。`unit` 红 = 插件自身 bug；`contract` 红 = dsh 平台变了；
 `integration` 红 = 装载/注册环节被破坏；`lifecycle` 红 = 本地状态管理回归；
