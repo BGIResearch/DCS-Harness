@@ -49,7 +49,9 @@
     "test:unit": "node test/compat/run.mjs -l unit",
     "test:contract": "node test/compat/run.mjs -l contract",
     "test:integration": "node test/compat/run.mjs -l integration",
-    "test:lifecycle": "node test/compat/run.mjs -l lifecycle"
+    "test:lifecycle": "node test/compat/run.mjs -l lifecycle",
+    "test:upgrade": "node test/compat/run.mjs -l upgrade",
+    "test:meta": "node test/compat/run.mjs -l meta"
   },
   "dependencies": {},
   "dsh": {
