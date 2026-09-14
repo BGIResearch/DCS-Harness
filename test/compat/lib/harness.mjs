@@ -177,8 +177,21 @@ export async function run({ filter, layer, json, quiet, bail } = {}) {
 /** 找到正在使用的 dsh 安装目录（含 node_modules/@deepseek-ai/*）。 */
 export function findDshRoot() {
   const candidates = [];
-  // 1) 环境变量显式指定
-  if (process.env.DSH_ROOT) candidates.push(process.env.DSH_ROOT);
+  // 1) 环境变量显式指定 —— 显式指定即视为权威：无效时直接报错，
+  //    绝不静默回退到自动探测（否则 CI 可能测到与预期不同的 dsh 版本，
+  //    产生「以为测了新版、实际测了旧版」的危险假绿）。
+  if (process.env.DSH_ROOT) {
+    const explicit = process.env.DSH_ROOT;
+    if (!existsSync(join(explicit, '@deepseek-ai', 'dsh', 'package.json'))) {
+      const err = new Error(
+        `DSH_ROOT 指向的目录不是有效的 dsh 安装根: ${explicit}\n` +
+        `  期望存在: ${join(explicit, '@deepseek-ai', 'dsh', 'package.json')}\n` +
+        `  请修正 DSH_ROOT，或取消该环境变量以启用自动探测。`);
+      err.code = 'ERR_DSH_ROOT_INVALID';
+      throw err;
+    }
+    return explicit;
+  }
   // 2) 当前 dsh 可执行文件所在包的根（bin 通常是符号链接，必须 realpath）
   try {
     const bin = process.env.DSH_BIN || 'dsh';

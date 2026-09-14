@@ -35,12 +35,19 @@ jobs:
 
       - name: 探测 dsh 安装根
         run: |
-          echo "DSH_ROOT=$(npm root -g)" >> "$GITHUB_ENV"
+          # 显式指定并校验：DSH_ROOT 无效时测试会以退出码 2 失败，
+          # 避免「静默回退到别的 dsh」造成假绿。
+          ROOT="$(npm root -g)"
+          test -f "$ROOT/@deepseek-ai/dsh/package.json" || { echo "未找到 dsh: $ROOT"; exit 1; }
+          echo "DSH_ROOT=$ROOT" >> "$GITHUB_ENV"
+          node -e "console.log('dsh', require('$ROOT/@deepseek-ai/dsh/package.json').version)"
+          node -e "console.log('dsh-tools', require('$ROOT/@deepseek-ai/dsh-tools/package.json').version)"
 
+      # 退出码语义：0=全通过 / 1=有用例失败 / 2=环境配置错误
       - name: 运行兼容性测试
         run: npm test
 
-      # 测试失败时也上传报告，便于对比哪一层红了
+      # 失败时也上传报告，便于对比哪一层红了
       - name: 生成 JSON 报告
         if: always()
         run: npm test -- --json > compat-report.json || true

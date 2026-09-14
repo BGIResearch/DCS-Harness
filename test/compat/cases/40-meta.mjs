@@ -155,6 +155,62 @@ test('meta', 'meta/execute-tests-assert-real-success', '调用 execute 的用例
     `以下用例调用了 execute 但既无成功态断言、也未声明为负向用例（可能假绿）: ${problems.join(', ')}`);
 });
 
+// ---------------------------------------------------------------- 运行器契约
+
+test('meta', 'meta/dsh-root-invalid-is-fatal', 'DSH_ROOT 无效时明确报错，不静默回退', async () => {
+  // 显式指定 DSH_ROOT 即视为权威。若静默回退到自动探测，
+  // CI 可能测到与预期不同的 dsh 版本 → 「以为测了新版、实际测了旧版」的危险假绿。
+  const { findDshRoot } = await import('../lib/harness.mjs');
+  const prev = process.env.DSH_ROOT;
+  process.env.DSH_ROOT = '/__definitely_not_a_dsh_root__';
+  try {
+    let err = null;
+    try {
+      findDshRoot();
+    } catch (e) {
+      err = e;
+    }
+    assert(err, 'DSH_ROOT 无效时必须抛错（否则会静默回退到其它 dsh）');
+    assertEqual(err.code, 'ERR_DSH_ROOT_INVALID', '应带可识别的错误码');
+    assert(/DSH_ROOT/.test(err.message), '错误信息应指明 DSH_ROOT');
+  } finally {
+    if (prev === undefined) delete process.env.DSH_ROOT;
+    else process.env.DSH_ROOT = prev;
+  }
+});
+
+test('meta', 'meta/exit-code-contract', '退出码契约：0=通过 / 1=有失败 / 2=配置错误', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { join: j } = await import('node:path');
+  const runner = j(ROOT, 'test', 'compat', 'run.mjs');
+
+  const codeOf = (env, args) => {
+    try {
+      execFileSync(process.execPath, [runner, ...args], {
+        env: { ...process.env, ...env }, stdio: 'pipe',
+      });
+      return 0;
+    } catch (e) {
+      return e.status;
+    }
+  };
+
+  // 全绿 → 0
+  assertEqual(codeOf({}, ['-q', '-k', 'meta/assert-equal-detects-mismatch']), 0,
+    '通过的用例应返回退出码 0');
+
+  // 配置错误 → 2（且必须与「有失败用例」的 1 区分开）
+  assertEqual(codeOf({ DSH_ROOT: '/__nope__' }, ['-q']), 2,
+    'DSH_ROOT 无效应返回退出码 2');
+
+  // 有失败用例 → 1：用一个必然失败的过滤（不存在的用例 id 不会失败，
+  // 故借 meta 层的假绿探针思路——直接跑一个会红的层次组合不现实，
+  // 改为验证「配置错误(2)」与「用例失败(1)」确实是不同码，避免两者混同。
+  const cfgErr = codeOf({ DSH_ROOT: '/__nope__' }, ['-q']);
+  assert(cfgErr !== 1,
+    '配置错误必须与「有失败用例」区分（否则 CI 无法辨别是环境问题还是代码问题）');
+});
+
 // ---------------------------------------------------------------- 覆盖完整性
 
 test('meta', 'meta/layers-cover-platform-surface', '四层用例均非空（无空跑层次）', async () => {

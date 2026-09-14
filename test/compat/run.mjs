@@ -43,6 +43,26 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
+// 先解析 dsh 安装根：配置错误应在跑用例前就以清晰信息暴露，
+// 而不是等到某个用例里抛出难读的堆栈。
+let dshRoot = null;
+try {
+  dshRoot = findDshRoot();
+} catch (e) {
+  if (e && e.code === 'ERR_DSH_ROOT_INVALID') {
+    process.stderr.write('❌ 环境配置错误\n' + e.message + '\n');
+    process.exit(2);
+  }
+  throw e;
+}
+if (!dshRoot) {
+  process.stderr.write(
+    '❌ 未找到 dsh 安装目录。\n'
+    + '   请设置 DSH_ROOT=<node_modules 路径>（内含 @deepseek-ai/dsh），\n'
+    + '   或确保 dsh 在 PATH 中。\n');
+  process.exit(2);
+}
+
 // 载入全部用例文件（按文件名排序，保证顺序稳定）
 const caseDir = join(here, 'cases');
 const files = readdirSync(caseDir).filter((f) => f.endsWith('.mjs')).sort();
@@ -51,8 +71,7 @@ for (const f of files) {
 }
 
 if (!opts.json && !opts.quiet) {
-  const root = findDshRoot();
-  process.stdout.write(`dsh 兼容性测试  (dsh 根: ${root || '未找到'})\n`);
+  process.stdout.write(`dsh 兼容性测试  (dsh 根: ${dshRoot})\n`);
 }
 
 const summary = await run(opts);
