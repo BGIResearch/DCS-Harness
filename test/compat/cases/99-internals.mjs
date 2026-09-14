@@ -588,6 +588,68 @@ test('internals', 'internals/extract-json-obj-from-llm-text', 'extractJsonObj �
   assertEqual(problems.length, 0, problems.join('; '));
 });
 
+// ---------------------------------------------------------------- 离线错误归因映射
+
+test('internals', 'internals/explain-offline-error-mapping', 'explainOfflineError 只对真正匹配的错误给提示', async () => {
+  // 该函数为已知的离线投递错误补上「下一步」提示。
+  // 真实缺陷（本轮发现）：镜像分支原用 `/…|镜像/i` —— 只要错误里**提到**
+  // 镜像就会收到「镜像名无效，请改用 public-library/…」的提示，
+  // 而问题其实可能出在网络（拉取超时）或资源（启动失败：内存不足），
+  // 会把用户引向**错误的方向**。
+  const explainOfflineError = extractFunction('explainOfflineError');
+
+  // 1) 真正「镜像名/url 无效」的表述应命中
+  const shouldHitImage = [
+    'image_url不存在',
+    'image_url does not exist',
+    '镜像名无效',
+    '镜像不存在',
+    '镜像无效',
+  ];
+  const missed = shouldHitImage.filter((t) => !explainOfflineError(t));
+  assertEqual(missed.length, 0, `以下镜像无效错误未给出提示: ${missed.join('; ')}`);
+
+  // 2) 仅「提到镜像」但问题不在镜像名的错误**不得**命中（否则误导用户）
+  const shouldNotHitImage = [
+    '拉取镜像超时，请稍后重试',
+    '容器镜像启动失败：内存不足',
+    'failed to pull image: timeout',
+    '资源规格非法',
+  ];
+  const noise = shouldNotHitImage.filter((t) => {
+    const hint = explainOfflineError(t);
+    return hint && /镜像无效/.test(hint);
+  });
+  assertEqual(noise.length, 0,
+    `以下非「镜像名无效」的错误被误加了镜像提示（会误导排查方向）: ${noise.join('; ')}`);
+
+  // 3) 其余三类映射仍应生效
+  const others = [
+    ['缺少 num_proc', /资源格式/],
+    ['permission denied', /\/data\/work/],
+    ['unknown shorthand flag', /脚本文件/],
+  ];
+  const broken = others.filter(([input, re]) => !re.test(explainOfflineError(input) || ''));
+  assertEqual(broken.length, 0,
+    `以下错误类型的提示失效: ${broken.map((x) => x[0]).join('; ')}`);
+
+  // 4) 未命中任何类型 → 返回空串（由调用方决定是否追加）
+  assertEqual(explainOfflineError('完全无关的错误'), '', '未命中应返回空串');
+  assertEqual(explainOfflineError(''), '', '空输入应返回空串');
+});
+
+test('internals', 'internals/enrich-offline-error-no-double-hint', 'enrichOfflineError 不重复追加提示', async () => {
+  // 与 diagnoseOfflineFailure 配合，避免同一错误上出现两份「下一步」。
+  const explain = extractFunction('explainOfflineError');
+  const enrich = extractFunction('enrichOfflineError', { explainOfflineError: explain });
+
+  const once = enrich('image_url不存在');
+  assert(/下一步/.test(once), '首次应追加提示');
+  const twice = enrich(once);
+  assertEqual((twice.match(/下一步/g) || []).length, 1,
+    `重复归因导致提示叠加（出现 ${(twice.match(/下一步/g) || []).length} 份）`);
+});
+
 // ---------------------------------------------------------------- 通道降级判定
 
 test('internals', 'internals/channel-unavailable-classification', 'isChannelUnavailable 准确识别「通道不可用」', async () => {
