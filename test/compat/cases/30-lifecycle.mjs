@@ -111,6 +111,46 @@ test('lifecycle', 'config/file-permissions-600', '含 API key 的配置以 600 �
   });
 });
 
+test('lifecycle', 'config/atomic-write-and-perms', '配置写入原子化且权限在写前收紧（含密钥）', async () => {
+  // 发现：saveCfg 原本直接 writeFileSync，两个问题：
+  //  1) 非原子 —— 中断会留下半截 JSON，而 loadCfg 对损坏配置**静默降级**，
+  //     用户会莫名「掉登录」、API key 消失且无提示。
+  //  2) 权限在**写之后**才 chmod —— 含 PAT 的内容有一小段窗口可被同机用户读取。
+  // 现改为：先创建 0600 的临时文件 → 写入 → rename。
+  await withIsolatedHome(async (dir) => {
+    const { loadCfg, saveCfg, cfgPath } = await mod('dcs-client.js');
+    const base = loadCfg();
+    saveCfg({ ...base, pat: 'dcs_pat_TEST', apiKeys: { genos: 'sk-test' } });
+
+    const p = join(dir, 'dcs-cloud.json');
+    assert(existsSync(p), `配置文件未生成: ${p}`);
+
+    // 1) 权限 600
+    assertEqual(statSync(p).mode & 0o777, 0o600, '配置权限应为 600');
+
+    // 2) 原子写：写入完成后不得残留临时文件
+    const { readdirSync } = await import('node:fs');
+    const tmpLeft = readdirSync(dir).filter((f) => f.includes('.tmp-'));
+    assertEqual(tmpLeft.length, 0, `配置写入后残留临时文件: ${tmpLeft.join(', ')}`);
+
+    // 3) 内容完整且可往返
+    const raw = readFileSync(p, 'utf8');
+    assertIncludes(raw, 'dcs_pat_TEST', 'PAT 应写入配置');
+    assertEqual(loadCfg().pat, 'dcs_pat_TEST', 'PAT 应可读回');
+
+    // 4) 临时文件的权限也必须是 600（否则写入窗口期会泄露密钥）
+    //    这里通过「模拟写入中断」间接验证：即使只创建临时文件，也不应默认 644。
+    //    做法：直接调用 saveCfg 无法拿到中间态，改为检查实现是否用了 mode 选项
+    //    （静态断言，配合上面的「无残留」共同保障）。
+    // 注意：不能用 [^)]* 匹配调用参数 —— 参数里含 JSON.stringify(...) 的右括号，
+    // 正则会提前截断（初版即因此误报）。改为在同一行内宽松匹配。
+    const src = readFileSync(join(ROOT, 'lib', 'dcs-client.js'), 'utf8');
+    const line = src.split('\n').find((l) => /writeFileSync\(\s*tmp/.test(l)) || '';
+    assert(/mode:\s*0o600/.test(line),
+      `写临时文件时应显式指定 mode 0o600（否则密钥在写入窗口期权限过宽）；实际行: ${line.trim()}`);
+  });
+});
+
 test('lifecycle', 'config/corrupt-file-recovers', '配置文件损坏时降级为默认值而不崩溃', async () => {
   await withIsolatedHome(async (dir) => {
     const { loadCfg, cfgPath } = await mod('dcs-client.js');
