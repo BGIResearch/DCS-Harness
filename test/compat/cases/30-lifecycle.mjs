@@ -583,6 +583,82 @@ test('lifecycle', 'lifecycle/all-writers-use-atomic', '所有持久化写入均�
     `以下写入未走原子写工具（中断会留下半截文件）:\n  ${problems.join('\n  ')}`);
 });
 
+test('lifecycle', 'lifecycle/watchdog-candidate-selection', '看门狗候选筛选：只守护「已批准 + 有待办 + 不忙」的项目', async () => {
+  // 看门狗会在无人值守时**自动唤醒 agent 续跑**，因此候选筛选必须准确：
+  // 多选会打扰正在工作的会话，少选会让停滞项目永远卡住。
+  await withIsolatedHome(async () => {
+    const { upsertProject, upsertModule, startRun, updateRun, listWatchdogCandidates, mergeProject } = await mod('projects.js');
+
+    // 辅助：建项目 + 一个模块，返回 [projectId, moduleId]
+    const mk = async (id, planStatus, moduleStatus) => {
+      await upsertProject({ project_id: id, plan: { planStatus } }, 's');
+      const r = await upsertModule(id, { name: 'M', desc: 'd' }, 's');
+      const mid = (r.module || r).id;
+      if (moduleStatus) {
+        // ⚠ API 契约：更新既有模块必须传 **module_id**（不是 id）——
+        // 传 id 会被当作新建，导致模块数增加（曾据此写出错误用例）。
+        await upsertModule(id, { module_id: mid, status: moduleStatus }, 's');
+      }
+      return [id, mid];
+    };
+    const isCand = (id) => listWatchdogCandidates().some((x) => x.id === id);
+
+    // 1) 计划未批准 → 不守护（还没进入执行阶段）
+    const [a] = await mk('WA', 'drafting');
+    assert(!isCand(a), '计划未批准的项目不应被守护');
+
+    // 2) 已批准 + 模块 pending → 守护
+    const [b] = await mk('WB', 'approved', 'pending');
+    assert(isCand(b), '已批准且有未完成模块的项目应被守护');
+
+    // 3) 已批准但无模块 → 不守护（无待办）
+    await upsertProject({ project_id: 'WC', plan: { planStatus: 'approved' } }, 's');
+    assert(!isCand('WC'), '无模块的项目不应被守护');
+
+    // 4) 已批准 + 全部模块 done → 不守护（已完成，不该被反复唤醒）
+    const [d] = await mk('WD', 'approved', 'done');
+    assert(!isCand(d), '全部模块已完成的项目不应被守护');
+
+    // 5) 已批准 + 模块 running → 不守护（agent 正在工作，不得打扰）
+    const [e] = await mk('WE', 'approved', 'running');
+    assert(!isCand(e), '有模块正在运行的项目不应被守护（避免打扰工作中的会话）');
+
+    // 6) 项目状态已完成 → 不守护
+    const [f] = await mk('WF', 'approved', 'pending');
+    await mergeProject('WF', { status: 'done' }, 's');
+    assert(!isCand(f), '项目已 done 时不应被守护');
+
+    // 7) 有 run 处于 running → 不守护
+    const [g, gmid] = await mk('WG', 'approved', 'pending');
+    await startRun('WG', gmid, { notes: 'x' }, 's');   // 保持 running
+    assert(!isCand(g), '有运行处于 running 的项目不应被守护');
+  });
+});
+
+test('lifecycle', 'lifecycle/upsert-module-requires-module-id', 'upsertModule 更新既有模块必须用 module_id 键', async () => {
+  // 实测契约：匹配既有模块用的是 input.module_id；传 input.id 会被当作**新建**。
+  // 这是容易踩的 API 细节 —— 传错会静默产生重复模块（而非报错）。
+  await withIsolatedHome(async () => {
+    const { upsertProject, upsertModule, getProject } = await mod('projects.js');
+    await upsertProject({ project_id: 'X' }, 's');
+    const r = await upsertModule('X', { name: 'M', desc: 'd' }, 's');
+    const mid = (r.module || r).id;
+
+    // 正确：用 module_id 更新 → 模块数不变、状态生效
+    await upsertModule('X', { module_id: mid, status: 'done' }, 's');
+    let mods = getProject('X').modules;
+    assertEqual(mods.length, 1, `用 module_id 更新后模块数应仍为 1，实际 ${mods.length}`);
+    assertEqual(mods[0].status, 'done', '用 module_id 更新应生效');
+
+    // 反例：用 id 更新 → 被当作新建（模块数增加）
+    await upsertModule('X', { id: mid, status: 'pending' }, 's');
+    mods = getProject('X').modules;
+    assertEqual(mods.length, 2,
+      `传 id 会被当作新建模块（实际 ${mods.length}）—— 本用例固化该契约，`
+      + `提醒调用方必须用 module_id`);
+  });
+});
+
 // ---------------------------------------------------------------- 交付文档
 
 test('lifecycle', 'projects/delivery-update-revision', '交付文档更新的 revision 单调递增', async () => {
