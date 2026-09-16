@@ -90,38 +90,6 @@
   - 结论：容器 /public 技能快照（2026-09-04）与 Genpilot 对话工具侧存在同步时差，biolens-search 以 MCP 形式独立演进，harness 直连 MCP 不受快照时差影响。
 - **其它**：`dcs-client.js` DEFAULT_CFG 增加 `biolensUrl`；工具描述/输出 schema 均按 MCP 真实契约编写（readOnlyHint/idempotentHint 等已在实现中遵守，只检索不下载不分析）。
 
-## [2.18.0] - 2026-09-15
-
-### 新增：dsh 兼容性测试模块（test/compat，99 例七层）+ 3 类真实缺陷修复
-
-针对运行中的 **dsh 0.1.5-rc.1**（dsh-tools 0.1.5-rc.2）做了系统兼容性体检。核心产出是一个**零依赖、可重复运行**的兼容性测试模块，`npm test` 一条命令给出「插件是否还兼容当前 dsh」的明确结论。
-
-**测试模块分层**（`test/compat`，详见其 README）：
-
-- `unit`(23) — 插件纯逻辑：atlas / audit / plan / report / tasks / projects / dcs-client
-- `contract`(16) — dsh 平台契约：`defineTool` schema DSL、服务注入、客户端 slot、会话格式迁移链、`dsh.compat` 声明一致性
-- `integration`(16) — 真实装载：48 工具全注册、schema 可编译、render/presenter 健壮性、客户端半在 `__ModuleLoader__` 下装载
-- `lifecycle`(20) — 配置 600 权限与损坏容错、任务库按会话隔离、项目/模块/运行（含 OAA）生命周期、交付 revision 递增
-- `upgrade`(8) — 会话格式迁移链演练：旧版本可迁移、**新版本必须明确拒绝**（防降级时静默错读污染数据）、损坏头可诊断
-- `frozen`(5) — 冻结参数不可变性（历史 readonly bug 防复发）
-- `meta`(11) — 测试自身有效性：断言库自检、运行器退出码契约、**逐用例假绿守卫**
-
-**修复的真实缺陷**：
-
-1. **`lib/audit.js` 漏检最危险的删除命令**（安全影响）——`\b` 在 `/`、`~` 之后不是有效边界，导致 `rm -rf /`、`rm -rf ~`、`rm -rf / ` **全部漏报**；同时 `rm -f`（无递归）被误报 critical。改用「行尾/空白/分隔符」边界 + 强制递归标志。
-2. **`lib/audit.js` 另有 7 类破坏性操作完全漏检**——`rm -rf /*`、`rm -rf ..`、`rm -rf $VAR`、`xargs rm -rf`、`find -delete`、`dd of=/dev/`、`> /etc/passwd`。已全部补齐并**按危险度分级**（`/`→critical、`/data|/work`→high、`/tmp`→medium），同时消除 `rm -rf $WORKDIR/tmp` 这类生信常规清理的误报（11 个真实写法零 critical/high 误报）。
-3. **`package.json` 的 `dsh.client.inject` 引用了不存在的包**——原值 `@deepseek-ai/dsh-client-runtime` 在 dsh 0.1.5-rc 中不存在（核对官方 63 个客户端包无一引用）。dsh 对 inject 缺失项**静默跳过**，导致客户端半装载顺序失去保障。改为声明真实提供方：`ui-renderer`(slots 服务) / `ui-conversation`(conversation.view) / `ui-settings-general`(settings.section) / `ui-sidebar`(sidebar.brand.*)。
-
-**增强**：
-
-- **终端卡片露出退出码徽章**——原注释声称「完成后带 stdout+退出码」，但 `presentResult` 从未设置 `exitCode`。现 `cliView` 增加结构化 `exit_code` 字段，`presentResult` 还原退出码并露出徽章（为 0 或解析不到时不设置，避免误导性成功徽章）。修复过程中发现并解决了由此引入的 `dcs_task_status` schema 拒绝风险。
-- **`dsh.compat` 声明**——在 `package.json` 记录已测 dsh 版本（`tested`/`testedTools`/`min`），并有对应契约用例校验运行时一致性。
-- **CI**——新增 `.github/workflows/compat.yml`，push/PR/每周定时运行；**装真实 dsh 而非项目内旧 devDep**；退出码语义 `0=通过 / 1=有用例失败 / 2=环境配置错误`。
-- **npm scripts**——`npm test` / `test:contract` / `test:upgrade` / `test:frozen` / `test:meta` 等分层快捷入口。
-
-**说明**：本模块的用例设计经**变异测试**验证 —— 通过注入变异确认用例真的会变红（例如还原历史 readonly bug 后 `frozen` 层 2/5 变红；把 `presentResult` 改名后 `integration` 层变红）。过程中发现 `frozen` 层初版是**假绿**的（用不存在的项目 + 非 image 图表调 execute，压不到赋值分支），已修正并新增逐用例假绿守卫防止复发。
-
-
 ## [2.15.0] - 2026-09-01
 
 ### 优化：对齐 dsh 0.1.1-rc.2 / 0.1.2-alpha 平台能力（工具呈现 + 并行调用 + 性能）

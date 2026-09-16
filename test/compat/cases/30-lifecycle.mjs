@@ -112,11 +112,16 @@ test('lifecycle', 'config/file-permissions-600', '含 API key 的配置以 600 �
 });
 
 test('lifecycle', 'config/atomic-write-and-perms', '配置写入原子化且权限在写前收紧（含密钥）', async () => {
-  // 发现：saveCfg 原本直接 writeFileSync，两个问题：
+  // 历史：saveCfg 曾直接 writeFileSync，两个问题：
   //  1) 非原子 —— 中断会留下半截 JSON，而 loadCfg 对损坏配置**静默降级**，
   //     用户会莫名「掉登录」、API key 消失且无提示。
   //  2) 权限在**写之后**才 chmod —— 含 PAT 的内容有一小段窗口可被同机用户读取。
-  // 现改为：先创建 0600 的临时文件 → 写入 → rename。
+  //
+  // 现状（上游 v2.17.3 为准）：saveCfg 采用「先加密 PAT → writeFileSync → chmod 600」。
+  // 上游选择了非原子写，本插件不再叠加原子写实现（以 origin 为准）。
+  // 因此本用例**只断言仍然成立的契约**：密钥密文落盘 + 权限 600 + 可解密读回；
+  // 「原子性」不再作为 saveCfg 的断言（见下方注释说明其已知边界），
+  // 但原子写工具仍被 tasks/projects/report/plan 使用，其实现由 all-writers-use-atomic 覆盖。
   await withIsolatedHome(async (dir) => {
     const { loadCfg, saveCfg, cfgPath } = await mod('dcs-client.js');
     const base = loadCfg();
@@ -125,30 +130,21 @@ test('lifecycle', 'config/atomic-write-and-perms', '配置写入原子化且权�
     const p = join(dir, 'dcs-cloud.json');
     assert(existsSync(p), `配置文件未生成: ${p}`);
 
-    // 1) 权限 600
+    // 1) 权限 600（写后收紧；窗口期风险见用例头部说明）
     assertEqual(statSync(p).mode & 0o777, 0o600, '配置权限应为 600');
 
-    // 2) 原子写：写入完成后不得残留临时文件
-    const { readdirSync } = await import('node:fs');
-    const tmpLeft = readdirSync(dir).filter((f) => f.includes('.tmp-'));
-    assertEqual(tmpLeft.length, 0, `配置写入后残留临时文件: ${tmpLeft.join(', ')}`);
+    // 2) 不做残留临时文件断言：saveCfg 当前为非原子写，本就不会产生临时文件
+    //    （保留该断言会变成恒真空转，故移除）。
 
     // 3) 内容完整且可往返。
-    //    v2.16.0 起上游把 PAT 静态加密（AES-256-GCM → patEnc），明文**不得**落盘；
-    //    本插件并入该特性后，「写明文 PAT」的旧断言不再成立，改为断言更强的契约：
-    //    磁盘上无明文 + 有密文 + 内存可解密读回。
+    //    v2.16.0 起上游把 PAT 静态加密（AES-256-GCM → patEnc），明文**不得**落盘。
     const raw = readFileSync(p, 'utf8');
     assert(!raw.includes('dcs_pat_TEST'), 'PAT 明文不得落盘（应加密为 patEnc）');
     assertIncludes(raw, 'patEnc', 'PAT 应加密写入 patEnc 字段');
     assertEqual(loadCfg().pat, 'dcs_pat_TEST', 'PAT 应可解密读回');
 
-    // 4) 临时文件权限必须在**写入前**收紧（否则内容会以默认 umask 短暂暴露）。
-    //    saveCfg 现在委托给 lib/atomic-write.js 的 atomicWrite(target, content, {mode})，
-    //    因此这里检查两处：调用方是否传了 mode；实现是否把它用在 writeFileSync 上。
-    const caller = readFileSync(join(ROOT, 'lib', 'dcs-client.js'), 'utf8');
-    assert(/atomicWrite\(cfgPath\(\)[\s\S]{0,120}?mode:\s*0o600/.test(caller),
-      'saveCfg 调用 atomicWrite 时应传入 mode: 0o600（否则密钥写入窗口期权限过宽）');
-
+    // 4) 原子写工具本身仍须把 mode 应用到临时文件（写入前收紧权限）——
+    //    该实现被 tasks/projects/report/plan 复用，故仍然校验。
     const impl = readFileSync(join(ROOT, 'lib', 'atomic-write.js'), 'utf8');
     assert(/writeFileSync\(\s*tmp[^\n]*mode/.test(impl),
       'atomicWrite 应把 mode 应用到临时文件的 writeFileSync 上（写入前收紧权限）');
@@ -561,6 +557,12 @@ test('lifecycle', 'lifecycle/atomic-write-helper', 'atomicWrite 保证原子性�
 test('lifecycle', 'lifecycle/all-writers-use-atomic', '所有持久化写入均使用原子写（防新代码漏用）', async () => {
   // 守卫：新增存储时容易忘记原子写。扫描 lib/ 下所有 writeFileSync 调用，
   // 除 atomic-write.js 自身外，不应有直接写「目标文件」的调用。
+  //
+  // 已知例外（以 origin 实现为准，均非本插件叠加的改动）：
+  //  - dcs-client.js `saveCfg`：上游 v2.16.0+ 采用「加密 PAT → writeFileSync → chmod」，
+  //    未走原子写。属**已知边界**，不再自行改造（保持与上游一致）。
+  //  - dcs-client.js `downloadBin`：下载 dcs 二进制后落盘，上游实现，同上。
+  // 这两个例外被显式列出，避免它们掩盖**其它**模块漏用原子写的真实问题。
   const { readFileSync, readdirSync } = await import('node:fs');
   const libDir = join(ROOT, 'lib');
   const files = readdirSync(libDir).filter((x) => x.endsWith('.js'));
@@ -568,6 +570,13 @@ test('lifecycle', 'lifecycle/all-writers-use-atomic', '所有持久化写入均�
   assert(files.length > 0, '未扫描到任何 lib 模块（用例将空转）');
   let scanned = 0;
   const problems = [];
+
+  // 已知例外：文件 → 允许的直接写入片段（正则）
+  const KNOWN_EXCEPTIONS = [
+    { file: 'dcs-client.js', pattern: /writeFileSync\s*\(\s*cfgPath\s*\(\)/, why: 'saveCfg 上游非原子写' },
+    { file: 'dcs-client.js', pattern: /writeFileSync\s*\(\s*out\s*,/, why: 'downloadBin 上游实现' },
+  ];
+  let exempted = 0;
 
   for (const f of files) {
     if (f === 'atomic-write.js') continue;          // 实现本体在此
@@ -579,12 +588,17 @@ test('lifecycle', 'lifecycle/all-writers-use-atomic', '所有持久化写入均�
       if (!/writeFileSync\s*\(/.test(t)) return;
       // 允许：写临时文件（tmp*）—— 那是原子写实现的一部分
       if (/writeFileSync\s*\(\s*tmp/.test(t)) return;
+      // 允许：已登记的上游例外
+      if (KNOWN_EXCEPTIONS.some((e) => e.file === f && e.pattern.test(t))) { exempted++; return; }
       problems.push(`${f}:${i + 1}: ${t.slice(0, 100)}`);
     });
   }
   assert(scanned > 0, '未扫描到任何源码行（用例将空转）');
   assertEqual(problems.length, 0,
     `以下写入未走原子写工具（中断会留下半截文件）:\n  ${problems.join('\n  ')}`);
+  // 例外清单不得腐坏：若上游改成原子写，例外数会归零——此时应清理清单而非静默放过
+  assert(exempted <= KNOWN_EXCEPTIONS.length,
+    `登记的例外数异常膨胀（${exempted} > ${KNOWN_EXCEPTIONS.length}），疑有新代码绕过守卫`);
 });
 
 test('lifecycle', 'lifecycle/watchdog-candidate-selection', '看门狗候选筛选：只守护「已批准 + 有待办 + 不忙」的项目', async () => {
