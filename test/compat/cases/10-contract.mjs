@@ -226,6 +226,22 @@ test('contract', 'plugin/compat-declaration-matches-runtime', 'dsh.compat 声明
   const [tmaj, tmin] = norm(compat.tested).split('.').map(Number);
   assert(amaj === tmaj,
     `运行时 dsh 主版本 ${actual} 与已测声明 ${compat.tested} 主版本不一致，请重跑兼容性测试并更新声明`);
+
+  // verified 列表（0.1.6 起）：已被矩阵实测通过的版本集合。运行时若在其中，
+  // 说明当前 dsh **确经实测**，不是「猜的兼容」——这是给用户最直接的信心来源。
+  if (Array.isArray(compat.verified)) {
+    assert(compat.verified.length > 0, 'dsh.compat.verified 若声明则不得为空');
+    assert(compat.verified.includes(compat.tested),
+      `dsh.compat.verified 应包含 tested（${compat.tested}），实际: ${compat.verified.join(', ')}`);
+    // verified 里的每个版本都必须是合法 semver-ish 串
+    for (const v of compat.verified) {
+      assert(/^\d+\.\d+\.\d+/.test(String(v)), `verified 条目不是合法版本号: ${v}`);
+    }
+    if (compat.verified.includes(actual)) {
+      process.stderr.write(`  [兼容] 运行时 dsh=${actual} 在已实测清单内（${compat.verified.length} 个版本已通过）\n`);
+    }
+  }
+
   // 次版本不一致时给出明确提示（不失败，但写入 detail 便于报告）
   if (amin !== tmin) {
     process.stderr.write(
