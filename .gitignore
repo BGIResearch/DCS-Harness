@@ -3,3 +3,7 @@ node_modules/
 .DS_Store
 dcs-reports/
 *.tgz
+
+# 分析交付产物（报告/PDF），不入库
+delivery/
+/*.pdf

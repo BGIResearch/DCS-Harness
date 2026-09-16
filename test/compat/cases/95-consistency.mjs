@@ -221,6 +221,7 @@ test('consistency', 'consistency/prompt-tool-references-resolve', 'systemPrompt 
     'dcs_task_ids',   // dcs_run_update 的参数
     'dcs_cloud',      // 品牌名（DCS Cloud 写作 dcs_cloud 的场景）
     'dcs_pat_',       // PAT 令牌前缀（形如 dcs_pat_...）
+    'dcs_path',       // BioLens 返回的文件**字段名**（容器 /public 路径），非工具（v2.16.0 起）
   ]);
 
   // 只检查「看起来像工具名」的标识符：以 dcs_ 开头且不含尾部下划线
@@ -253,7 +254,7 @@ test('consistency', 'consistency/tool-descriptions-references-resolve', '工具�
   await mod.apply(ctx);
 
   assert(tools.size > 0, '未注册任何工具（用例将空转）');
-  const NON_TOOL = new Set(['dcs_task_ids', 'dcs_cloud', 'dcs_pat_']);
+  const NON_TOOL = new Set(['dcs_task_ids', 'dcs_cloud', 'dcs_pat_', 'dcs_path']);
   const looksLikeTool = (x) => /^dcs_[a-z0-9]+(?:_[a-z0-9]+)*$/.test(x);
   const problems = [];
   for (const [name, t] of tools) {

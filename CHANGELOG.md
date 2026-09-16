@@ -2,7 +2,95 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [2.16.0] - 2026-09-15
+## [2.17.3] - 2026-09-09
+
+### 修复：「项目文件」tab 切换时完全驻留内存（路径/列表/已打开文件/滚动位置均不重置）
+
+- **问题**：v2.17.2 虽然不再自动刷新，但切 tab 组件重建后仍会异步重载/跳回，已打开的目录、预览文件与滚动位置不能"定住"。
+- **修复**（lib/client.js FilesView 重构）：
+  - **模块级内存状态** `FilesMem`（按会话）：当前目录 path / 目录列表 entries / 是否已加载 loaded / 项目 project / 已打开预览 preview / 滚动位置 scroll{list,prev} 全部驻留内存；
+  - **同步恢复**：组件初始 state 直接读内存（useState 初始值），切回 tab 首帧即还原，不做异步重载、无闪烁；同一项目切走再切回完全不动（不触发列目录）；
+  - **滚动保持**：目录列表与预览区滚动位置 onScroll 实时写内存、卸载前回写、每次渲染后回放（打开的文件预览在切走/切回后保持在原滚动位置）；
+  - **路径跨页面持久化**：仍写 localStorage（`dcs2-files-<sessionId>`），整页刷新后恢复上次目录（仅首次/换项目才回工作目录）；
+  - 仅首次进入、或检测到切换了项目时才真正加载；30s 静默后台刷新仍保留（内容更新但不打断预览/滚动）。
+
+## [2.17.2] - 2026-09-09
+
+
+### 修复：切回「项目文件」tab 时不再重置路径
+
+- **问题**：v2.17.1 后每次从对话切回「项目文件」会重新加载并回到工作目录（把用户打开的路径丢了），观感上"又在刷新"。
+- **修复**（lib/client.js FilesView）：
+  - **记住上次打开的目录**（localStorage 按会话 `dcs2-files-<sessionId>` 存 {project,path}）：同一项目切回 tab 自动恢复到原目录并**静默刷新**，仅首次进入或切换了项目才回工作目录；
+  - 自动加载/轮询采用静默模式（不闪"加载中"、不覆盖当前列表），失败静默保留原内容，只有用户主动「🔄 刷新」才显示忙碌态；后台轮询降到 30s。
+
+## [2.17.1] - 2026-09-09
+
+
+### 修复：「项目文件」tab 每次进入需手动刷新
+
+- **问题**：进入文件管理时列表不自动拉取最新、且无常驻刷新，需手动点「🔄 刷新」。
+- **修复**（lib/client.js FilesView）：
+  - 首次进入/项目切换后自动列目录：`/v2/files/status` 返回时若目录为空、或检测到当前项目已切换（`lastProjRef` 比对 project id），自动 `setCur(home)` 触发列表刷新；
+  - 常驻静默自动刷新（15s）：目录/文件持续保持最新，切回本 tab 无需手动刷新；忙碌/预览中自动跳过；
+  - `listDir(p, quiet)` 支持静默模式：后台刷新不闪 spinner、不干扰预览与导航，只静默更新列表。
+
+## [2.17.0] - 2026-09-09
+
+### 新增：「项目文件」tab —— 浏览当前项目容器文件（小文件在线预览 / 大文件下载）
+
+- **客户端**（lib/client.js）：对话视图 `conversation.view` 新增第 4 个 tab **「项目文件」**（id `dcs-files`，order 62）：
+  - 面包屑导航 + 快捷入口：🏠 工作目录 `/work/{user}`（默认）、📚 `/public`、🧬 时空公共数据集 `/public/database/CNGBdb/pub/SciRAID/stomics`，另支持输入任意容器绝对路径跳转（仅限 /work /public /home，路径白名单）；
+  - 目录/文件列表（名称/类型/大小/修改时间，目录优先排序），点击进入目录、双击打开；
+  - **小文件在线预览**：文本类（txt/csv/tsv/md/log/json/py/sh/r/vcf/bed 等 ≤4MB）内联文本查看，图片（png/jpg/gif/webp/svg ≤6MB）base64 内联显示；二进制/过大文件提示下载；
+  - **大文件下载**：任意大小，附件形式（attachment）保存，文件名 UTF-8 编码。
+- **宿主**（lib/index.js）：新增 4 组路由：
+  - `GET /v2/files/status` → 当前项目/用户/片区 + 容器 home（/work/{user}）；
+  - `GET /v2/files/list?path=` → python 列容器目录（`dcs terminal exec`，JSON 条目：name/type/size/mtime，≤1000 条）；
+  - `GET /v2/files/read?path=` → `dcs terminal download` 拉本地缓存后按扩展名/大小分类预览（文本 utf-8、图片 base64）；
+  - `GET /v2/files/download?path=` → 容器文件下载到本地缓存（sha1 去重，已存在复用）后 **createReadStream 流式回传**（attachment，任意大小）；
+  - 新增模块级 `localFileDir/fetchContainerFile/safeContainerPath` 助手（容器路径白名单 /work /public /home，拒绝 `..` 与裸 `/`）。
+- **实测（BGI-时空线上容器）**：列目录 python（/work /public 顶层、JSON 输出）与 `dcs terminal download`（skills_snapshot.json 562KB → 3.8s 下载成功）均已验证；路由为其 1:1 封装。
+- **已知边界**：预览只针对文本/图片小文件；h5ad/bed 等二进制大文件走下载后本地工具查看；需当前片区为容器就绪状态（termExec 内置容器自动开+重试）；文件缓存于本机 `~/.dsh/dcs-file-cache/`（下载去重复用）。
+
+## [2.16.2] - 2026-09-08
+
+### 更新：BioLens MCP 升为常开补充通道 + 默认片区 = 时空片区（BGI-时空）
+
+- **MCP 从「兜底」改为「常开补充」**：`dcs_biolens_search` 的宿主直连 BioLens MCP 不再只在「Genpilot 无容器命中」时才跑——**mcp=true（默认）时始终并行补充**公开库记录与文件（`search_datasets` + 前 N 条 `list_dataset_files`），与 Genpilot 对话/容器验证结果并列返回：容器 /public 命中优先展示（可直接用），MCP 补充给出公开库 record_id / download_url / dcs_path 供交叉对照；`channel` 输出如实标注 `genpilot+容器+mcp补充` 等组合。Genpilot 对话不可用时 MCP 独立兜底保持不变（channel=mcp）。
+- **默认片区 = 时空片区（BGI-时空）**：实测容器 /public 公共数据（STDS 公共数据集、技能库等）只在 BGI Center 片区节点挂载（DCS-华南1 等公共云节点的 /public 为空或不全）。找数据默认片区明确为 BGI-时空；当前片区非时空时，先 `dcs region switch BGI-时空`（或项目管理窗口切换节点）再跑，否则容器验证拿不到 /public。
+- **同步更新**：工具描述 / `mcp` 参数说明 / 输出 schema / systemPrompt「学术检索 A / 找数据步骤 2」/ README / docs/dcs-database-atlas.md。
+
+## [2.16.1] - 2026-09-08
+
+### 修正：找数据默认走「Genpilot 对话」（容器 /public 已有数据优先），宿主 MCP 降为兜底
+
+- **需求修正背景**：实测确认 Genpilot 助手（web/项目容器对话）的 biolens_search 不仅能命中约 11.7 万条公开组学数据集，还能**优先找到本地容器 /public 中已有的数据**（返回 dcs_path / 容器路径）；且 biolens-search 是助手侧能力（对话触发，无 CLI），宿主直连 MCP 拿不到容器 dcs_path。据此把「找数据」的**默认通道从「宿主直连 MCP」改为「容器内 Genpilot 对话」**。
+- **`dcs_biolens_search` 行为升级**：① 默认在项目在线容器里向 Genpilot 提交找数据任务（指示其优先调用 biolens_search、优先给出容器 /public 真实路径、禁止编造）；② 对话返回的只读检索命令经白名单（safeSearchCmd）在容器内执行，**返回 /public 真实命中路径证据**；③ Genpilot 对话不可用或无容器命中时，自动降级**宿主直连 BioLens MCP**（mcp=true，可关）查公开库记录与文件（download_url）；④ 新增 `channel`（genpilot+容器 / genpilot / mcp）、`evidence`、`answers`（多轮补信息）输出字段。
+- **会话流程同步**：systemPrompt「学术检索 A / 找数据步骤 2」、README、docs/dcs-database-atlas.md 均改为「第一动作 = dcs_biolens_search（Genpilot 对话·容器 /public 优先），宿主 MCP 兜底」。
+- **实测记录**：BGI-时空容器 delegate 对话返回「command -v biolens_search → 无工具 → find /public 容器检索」的容器优先方案（当前 delegate 后端未见 biolens_search 工具，平台侧助手具备）；该方案的只读命令经工具容器内执行可给出 /public 真实命中（如 /public/database/CNGBdb/pub/SciRAID/stomics/STDS0000018/20、STDS0000139 等小鼠脑数据）；宿主 MCP 兜底独立实测命中 4870 条（SpatialGWAS 小鼠全脑图谱 Top）。工具在 biolens_search 进入 Genpilot 后端后会自动切换到「工具直接命中 + dcs_path」路径（提示词已指示优先使用）。
+- **已知边界（下一版本候选）**：web 助手侧的 biolens_search + dcs_path 由平台 Genpilot 代理上下文（DCS Cloud 集成）生成——经实测，dcs CLI 无 agent 通道、容器内无 hermes/gateway、`dcs_llm`/delegate 后端为纯对话模型（自述无工具调用）、且**宿主/容器直连 BioLens MCP 均返回空 `dcs_path`**。要用上 web 侧完整能力（含 dcs_path 容器映射），下一版本需平台侧提供 agentic 对话 API 入口（如带 user_id/project_id/task_id + X-Access-Token 的 /chat/stream 类接口）后，harness 新增 agentic 对话通道、在项目容器内执行并回读 dcs_path；在此之前保持「Genpilot 对话定方案 + 容器内只读验证 /public 命中 + MCP 兜底公开库」。
+
+## [2.16.0] - 2026-09-08
+
+### 新增：dcs_biolens_search（BioLens MCP 直连检索，Genpilot biolens-search 同一后端）+ 找数据流程升级 + dsh 0.1.2-rc.1 适配核验
+
+**背景**：DCS Genpilot 平台近期上线了 **biolens-search**——Genpilot 助手侧的检索能力，通过其 `biolens_search` 工具调用 Biolens 平台底层的组学数据集索引（约 11.7 万条、139 个来源库），仅对话可触发、无 CLI。经实测确认其程序化通道 = **BioLens MCP 服务**（`https://db.cngb.org/biolens/mcp`，`search_datasets` / `list_dataset_files` 两个 JSON-RPC 工具，宿主 HTTP 直连即可），据此完成以下升级：
+
+- **新增工具 `dcs_biolens_search`**：宿主直连 BioLens MCP（无需容器、无需 Genpilot 对话）：
+  - `search_datasets`：中英文自然语言检索组学数据集（CNGBdb / CROST / NCBI GEO / CZ CELLxGENE / SpatialGWAS / MOSTA 时空图谱等），bm25+向量混合打分排序，返回 record_id / source / title / availability / access / score；检索 1-5s，替代全盘 find；
+  - `list_dataset_files`（execute=true 默认对命中前 files 条取文件清单）：返回 file_name + `download_url`；**经 DCS Cloud 集成（Genpilot 容器对话）调用时会补 `dcs_path` 容器内路径** → 「优先命中容器 /public 已有数据」落地；
+  - key 管理：`dcs_api_key set biolens <auth_key>`（db.cngb.org/biolens 申请，与 Genpilot 同一 key）或 env `DCS_BIOLENS_KEY`；端点可配 `biolensUrl`（cfg.biolensUrl，默认官方端点）；key 不落 git。
+- **找数据流程升级（systemPrompt / README / atlas 同步）**：会话「学术检索 A / 步骤 2 找数据」第一动作改为 `dcs_biolens_search`（容器 /public 优先语义：BioLens 命中 → dcs_container_ls/dcs_data_inspect 验证容器路径 → dcs_public_search/dcs_data_find 兜底），替代「先逐目录 ls/find」的旧习惯。
+- **dsh 0.1.2-rc.1 适配核验（实测）**：对 `@deepseek-ai/dsh-tools` 0.1.1-rc.2 → 0.1.2-rc.1 做类型差异比对——插件使用的 `defineTool` / `isConcurrencySafe` / `presentCall/presentResult` 选项**全部保留、签名不变**（0.1.2 新增 PTC 模式 `presentationMode: native|ptc|both` 与 `run_code`，为可选增强、默认 native 不影响现有工具呈现）；peerDependencies `^0.1.1-rc.2` 天然覆盖 0.1.2-rc.1，无需改依赖即可升级 profile。README 已注明支持范围。
+- **实测记录（2026-09-08，BGI-时空 / DCS-华南1）**：
+  - MCP 直连 `search_datasets("小鼠脑时空图谱 E16.5 全脑 Stereo-seq")` → 命中 4870 条，Top5 均为 SpatialGWAS 小鼠全脑 Stereo-seq 图谱（record_id `biolens:spatialgwas:SpatialGWAS-T168` 等，files_available / public）；检索秒级返回；
+  - `list_dataset_files` 对 GEO（GSE201610）返回 5 个文件 + download_url（宿主直连无 dcs_path）；dcs_path 仅在 DCS Cloud 集成调用时返回（与官方输出契约一致）；
+  - 对照组：BGI-时空容器 `/public/database/CNGBdb/pub/SciRAID/stomics/` 确实已镜像小鼠脑数据（STDS0000018/20 Visium、STDS0000139 MouseBrain_P7 等），与 BioLens 检索结果可互相印证；
+  - 结论：容器 /public 技能快照（2026-09-04）与 Genpilot 对话工具侧存在同步时差，biolens-search 以 MCP 形式独立演进，harness 直连 MCP 不受快照时差影响。
+- **其它**：`dcs-client.js` DEFAULT_CFG 增加 `biolensUrl`；工具描述/输出 schema 均按 MCP 真实契约编写（readOnlyHint/idempotentHint 等已在实现中遵守，只检索不下载不分析）。
+
+## [2.18.0] - 2026-09-15
 
 ### 新增：dsh 兼容性测试模块（test/compat，99 例七层）+ 3 类真实缺陷修复
 
@@ -33,6 +121,7 @@
 
 **说明**：本模块的用例设计经**变异测试**验证 —— 通过注入变异确认用例真的会变红（例如还原历史 readonly bug 后 `frozen` 层 2/5 变红；把 `presentResult` 改名后 `integration` 层变红）。过程中发现 `frozen` 层初版是**假绿**的（用不存在的项目 + 非 image 图表调 execute，压不到赋值分支），已修正并新增逐用例假绿守卫防止复发。
 
+
 ## [2.15.0] - 2026-09-01
 
 ### 优化：对齐 dsh 0.1.1-rc.2 / 0.1.2-alpha 平台能力（工具呈现 + 并行调用 + 性能）
@@ -46,6 +135,19 @@
 - **优化：dcsTaskInfo 并发首查去重**——并行路由与 8s/15s 轮询同时对同一 taskId 首查时只发一次 `dcs analysis info`，其余复用同一 Promise（in-flight 去重），避免打爆 DCS API。
 - **优化：会话地图投影统一 + ignorable 过滤**——提取公共 `projectSessionEvent()` 供 HTTP 拉取与 SSE 实时推送共用（消除两处重复投影逻辑）；兼容 dsh 0.1.2-alpha.2 恢复的 `SessionEvent.ignorable`，被标记为可忽略的内部噪音事件一律不进会话地图。
 - **说明**：`agents`/`sessionTitle` 为可选增强服务（代码已 ctx.get 判空兜底），保持不入硬 inject，避免在缺服务的 profile 阻塞插件加载。
+
+### 新增：时空组学 P0-P2 改进 + Genos 变异评测 + dcs 二进制认证升级（2026-09-05 补充）
+
+- **新增工具 `dcs_script_submit`**：把脚本内容写入离线容器 `/data/work` 并投递（复杂命令先落脚本再 `bash`，避免 `-t/-c` 被 CLI 当全局 flag）。
+- **新增工具 `dcs_task_wait`**：轮询离线任务直至 settle（completed/failed/warning/canceled），复用日志子任务下钻（`extractSubtaskIds`）；配合 `dcs_script_submit` 形成「投递 → 等待 → 取日志」闭环。
+- **新增工具 `dcs_image_probe`**：探测镜像是否含 python3 及其版本，缓存 24h。优先 `dcs image info` 的 `tools.Python3`/`language` 元数据零成本判定（实测元数据自带 232 个 Python3 包），元数据无法判定才投最小离线任务实测；后续 `dcs_offline_run`/`dcs_script_submit` 遇 python3 命令自动查缓存提示（`imagePyHint`）。
+- **新增工具 `dcs_auth_export`**：把已配置凭证（PAT + Genos key）注入容器 env 文件（base64，secret 不进对话/argv）或掩码自查。Genos #1 token 互通：宿主会话凭证操作走宿主 CLI，容器内只注入 `DCS_PAT` + `HG38_VCF_PREDICT_API_KEY`。
+- **新增工具 `dcs_genos_deploy_vcf`**：跨区复制 VCF 到 Genos 人源服务可读的 DCS-华南1 存储（`data info` → `data copy --target-zone 华南1` → 回读 `file_id`），Genos #2。
+- **安全：PAT 静态加密**——PAT 由明文落盘改为 AES-256-GCM（scrypt 派生密钥 + hostname/DSH_HOME 绑定），`loadCfg` 透明解密，`DCS_PAT` 环境变量与 `file.pat` 兼容；本次已把存量明文 PAT 安全迁移为 `patEnc`（备份留底、往返校验一致、无明文残留）。
+- **dcs 二进制认证更新**：`DCS_VERSION` v1.1.0 → v1.2.0，`RELEASE_SHA` 五平台全量改为官方 SHA256SUMS 真值（linux-amd64 另经实测下载校验 `f4cf819d`）。实测确认 dcs 的 `--version` 恒输出 V1.0.0（上游未 bump），故只信 SHA256，`dcs_status` 改报实际 SHA256 前缀，不再用版本常量冒充。
+- **dcs v1.2.0 兼容适配**：v1.2.0 起 `project current` 字段漂移（`username`/`current_project_name` → `project_name`/`user_role`，新增 `billing_group`/`failed_task_count`/`is_arrears`），`dcsStatus` 本地归一化兜底（username 从 `config show` 补全、token 不外泄）；本机二进制升级后因 token AES 格式不兼容需重建登录态，用已配置 PAT 重新 `dcs login`。
+- **实测修正**：`dcs_image_probe` 兜底探测资源 `vf=4g,num_proc=1` 低于最小机型 4c 16g（报 81201「匹配不到计算资源」）→ 改 `vf=16g,num_proc=4`；`explainOfflineError` 81201 归因由「资源缺参」改为「未匹配可用机型/通用失败」，并新增最小机型提示。
+- **其它**：`projects.js` bestProjectMatch；`report.js` `%%chart` 渲染修复 + A4 打印 CSS；`dcs_llm` 超时 600s + `category`/`warning` 字段；`dcs_terminal_exec` 支持 `run_in_background`。
 
 ## [2.14.8] - 2026-08-28
 

@@ -133,10 +133,14 @@ test('lifecycle', 'config/atomic-write-and-perms', '配置写入原子化且权�
     const tmpLeft = readdirSync(dir).filter((f) => f.includes('.tmp-'));
     assertEqual(tmpLeft.length, 0, `配置写入后残留临时文件: ${tmpLeft.join(', ')}`);
 
-    // 3) 内容完整且可往返
+    // 3) 内容完整且可往返。
+    //    v2.16.0 起上游把 PAT 静态加密（AES-256-GCM → patEnc），明文**不得**落盘；
+    //    本插件并入该特性后，「写明文 PAT」的旧断言不再成立，改为断言更强的契约：
+    //    磁盘上无明文 + 有密文 + 内存可解密读回。
     const raw = readFileSync(p, 'utf8');
-    assertIncludes(raw, 'dcs_pat_TEST', 'PAT 应写入配置');
-    assertEqual(loadCfg().pat, 'dcs_pat_TEST', 'PAT 应可读回');
+    assert(!raw.includes('dcs_pat_TEST'), 'PAT 明文不得落盘（应加密为 patEnc）');
+    assertIncludes(raw, 'patEnc', 'PAT 应加密写入 patEnc 字段');
+    assertEqual(loadCfg().pat, 'dcs_pat_TEST', 'PAT 应可解密读回');
 
     // 4) 临时文件权限必须在**写入前**收紧（否则内容会以默认 umask 短暂暴露）。
     //    saveCfg 现在委托给 lib/atomic-write.js 的 atomicWrite(target, content, {mode})，

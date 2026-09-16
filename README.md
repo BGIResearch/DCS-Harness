@@ -23,11 +23,20 @@ v2.0 曾把 DCS 研究工作台做成独立 profile（`dcs-harness`）单独开�
 
 **v2.12.0 · 投递多通道（Pod 内 `dcs task run` + 自动 `-m` 挂载）+ builtin 云技能接线 + 专家优先**：修复「**离线/WDL 任务输入文件对引擎不可见**」——此前投递走宿主 CLI（`analysis`/`workflow`，无 `-m` 挂载语义），外部导入实体（如 `VIRE-chip202205001`）的文件在数据管理可见但引擎看不到；现改为**优先走 Genpilot Pod 内 `dcs task run -t s|w`**（容器挂载体系 + `-m` 显式挂载输入文件），Pod 通道不可用时自动降级宿主 CLI 并标注通道。并把 **builtin 云技能**（cloud-terminal / cloud-public-resource / dcs-data-manager / dcs-workflow-skill / literature-search）接入 skillCatalog 供发现读取，synPrompt 增加「**先专家后技能**」路由与「**带特定目标数据必须在已有项目分析**」的项目归属判断。
 
+**v2.16.0 · biolens-search（MCP）数据检索 + dsh 0.1.2-rc.1 适配**：新增 `dcs_biolens_search`——宿主直连 **BioLens MCP**（OmicSeek 组学数据集索引，`db.cngb.org/biolens/mcp`，**DCS Genpilot 对话里自动启用的 biolens-search 即同一后端**：约 11.7 万条数据集 / 139 个来源库），中英文自然语言 1-5s 检索（bm25+向量混合打分），返回排序结果与文件清单（`download_url`；经 DCS Cloud/Genpilot 集成调用会补 **`dcs_path` 容器路径** → 优先命中容器 `/public` 已有数据）。「找数据」流程第一步改为 BioLens 检索（替代全盘 find）；实测对齐 dsh-tools 0.1.2-rc.1（`defineTool`/`isConcurrencySafe`/`presentCall` 兼容，新增 PTC 为可选模式不影响默认 native 呈现）。key 用 `dcs_api_key set biolens <auth_key>` 或 env `DCS_BIOLENS_KEY` 配置。
+
+**v2.16.1 · 找数据默认走 Genpilot 对话（容器 /public 优先）**：按真实用法修正 `dcs_biolens_search` 默认通道——**先在项目在线容器里用 Genpilot 对话找数据**（Genpilot 助手的 biolens_search 不仅能命中约 11.7 万条公开数据集，还能**优先找到容器 /public 里已有的本地数据**；对话返回的只读检索命令由工具在容器内执行验证，给出 /public 真实命中路径/dcs_path）；**宿主直连 BioLens MCP 降为兜底**（Genpilot 对话不可用或无容器命中时查公开库记录与文件，`mcp=false` 可关）。会话「学术检索 A / 找数据步骤 2」同步改为该语义。
+
+**v2.16.2 · MCP 升为常开补充通道 + 默认片区 = 时空片区（BGI-时空）**：`dcs_biolens_search` 的宿主 BioLens MCP 不再只在 Genpilot 无命中时兜底——**mcp=true（默认）时始终并行补充**公开库记录与文件（容器命中优先展示，MCP 供交叉对照/下载）；**找数据默认片区明确为时空片区 BGI-时空**（容器 `/public` 数据只在 BGI Center 片区挂载：STDS 公共数据集、技能库等），当前片区非时空时提示先 `dcs region switch BGI-时空`（或项目管理切换节点）再跑容器验证。会话提示、工具描述/参数/输出 schema、README、atlas 同步。
+
+**v2.17.0 · 新增「项目文件」tab（浏览当前项目容器文件：小文件在线预览 / 大文件下载）**：对话视图新增第 4 个 tab——**项目文件**：浏览当前项目在线容器里的文件夹（默认 `工作目录 /work/{user}`，支持跳转 `/public` 公共库、一键进入时空公共数据集目录 `/public/database/CNGBdb/pub/SciRAID/stomics` 等）；文件按 类型/大小/修改时间 列出，双击/按钮**在线预览**（文本 ≤4MB、图片 ≤6MB 直接内联查看），任意大小文件一键**下载**（容器→本机流式下载，附件形式保存）。宿主新增 `/v2/files/status|list|read|download` 四组路由；`dcs terminal exec`（python 列目录）与 `dcs terminal download` 机制已在线上容器实测验证。
+
 **两个核心窗口**（`conversation.view` tab 环，随每个对话更新，`对话`原样保留）：
 
 | 窗口 | 内容 |
 | --- | --- |
 | **项目管理** | 项目概览（目标 / 状态 / 模块统计 / token 消耗 / 模型 / 节点）+ 模块卡片（状态 / 进度）+ **运行版本时间线**（v1/v2…，历史全保留）+ 代码/输入/输出文件清单 + 运行费用 + **Genpilot 模型下拉切换**（持久化）+ **节点（片区）下拉切换**（`dcs region switch`）+ **费用与资源面板**（项目余额 + 最近离线任务费用/资源/镜像）+ **里程碑质检清单** + **分片任务进度聚合** + **自有数据来源展示** |
+| **项目文件** | 浏览当前项目在线容器文件（面包屑导航 / 快捷入口：工作目录、`/public`、时空公共数据集 STDS）；文件类型/大小/时间列表；**小文件在线预览**（文本 ≤4MB、图片 ≤6MB 内联）；**任意大小文件下载**（容器→本机附件保存） |
 | **结果交付** | 论文式交付文档（科学问题 / 假说 / 分解 / 数据 / 方法 / 发现与结论 / 创新性与已有研究的关系 / 下一步计划），关键节点**整体梳理**（revision 递增），支持 **bar/line/pie/scatter/heatmap/stat/table/summary/image/video/audio/iframe/link/html 多模态图表** + **`%%chart:图id%%` 正文随文插入** + **图片本地化交付**（自动下载到本机，离线可用） |
 
 **使用流程**：
@@ -51,7 +60,7 @@ bash scripts/install-harness-profile.sh
   → ⓪ 立项（Genpilot 项目）：dcs_project_create 创建本项目（自动取第一个授权计费组），project_code 登记到 dcs_project_update
   → ⓪.5 复用 DCS 原生 skill / 专家：dcs_skills_list → dcs_skill_read；需要某方向专家用 dcs_experts_list → dcs_expert_read
   → ① 数据确认（第一步）：用 ask_user_question 主动询问用户是否提供自有数据（本地路径/容器/链接，不限类型，附用途描述），customData.items 登记；无则说明优先用 DCS 公共库 /public
-  → ② 学术检索：web_search/子代理查文献背景；dcs_atlas/dcs_container_ls/dcs_public_search 摸清可用数据资源与可复用流程
+  → ② 学术检索：web_search/子代理查文献背景；**dcs_biolens_search（Genpilot 对话找数据，容器 /public 优先，第一动作）** → dcs_container_ls 验证 → dcs_atlas/dcs_public_search 摸清可用数据资源与可复用流程
   → ③ 给出分析计划：dcs_plan_update（科学问题→数据→方法步骤→预期产出），planStatus=awaiting_review
   → ④ 与用户互动修改：ask_user_question 请用户确认/调整，直至 planStatus=approved
   → ⑤ 才进入执行：dcs_module_update 分解模块 → dcs_run_start 执行（Genpilot 在线容器/离线并行）
@@ -65,6 +74,7 @@ bash scripts/install-harness-profile.sh
 | 工具 | 作用 |
 | --- | --- |
 | `dcs_atlas` | 查看「数据库全图谱」：11 片区公共库 + 官方组学工具库（8 大类）+ 关键词映射 + 容器公共数据集 + DCS 原生技能/专家库 |
+| `dcs_biolens_search` | **找数据第一动作：默认片区 = 时空片区 BGI-时空；默认在项目容器内走 Genpilot 对话**（Genpilot 助手 biolens_search 命中约 11.7 万条/139 来源库公开数据集，且**优先给出容器 /public 已有数据的 dcs_path/真实路径**；只读命令容器内执行验证）；**宿主 BioLens MCP 始终并行补充**公开库记录与文件（OmicSeek，bm25+向量排序 + download_url，`mcp=false` 可关）。key：`dcs_api_key set biolens <auth_key>` |
 | `dcs_skills_list` | 列出/检索 DCS Genpilot「原生技能库」（`/public/skills`，dcs-skills / builtin_skills / OmicsClaw / LabClaw / bioSkills / claude-scientific-skills / ClawBio，973 条），支持按类别/关键词/仅原生过滤 |
 | `dcs_skill_read` | 读取某个 DCS 原生技能的完整 `SKILL.md`（必要时 `README.md` / `AGENTS.md`） |
 | `dcs_experts_list` | 列出 DCS「专家库」（`/public/skills/experts`：单细胞/空间/WGS-WES/CIMA/HCC 病理等） |
@@ -157,7 +167,7 @@ dsh plugin --profile web add /path/to/DCS-Harness
 ## 目录
 
 ```
-lib/index.js         宿主半：48 工具（presentCall 卡片呈现 + 只读工具 isConcurrencySafe）+ systemPrompt 流程引导 + 「项目管理/DCS/设置」HTTP 路由 + 图片本地化交付 + 会话地图 SSE
+lib/index.js         宿主半：54 工具（presentCall 卡片呈现 + 只读工具 isConcurrencySafe）+ systemPrompt 流程引导 + 「项目管理/DCS/设置」HTTP 路由 + 图片本地化交付 + 会话地图 SSE
 lib/dcs-client.js    dcs 二进制管理（30s 解析缓存）、PAT 登录、命令执行、公共库检索
 lib/projects.js      v2 数据模型：项目/模块/运行版本/文件/交付/自定义数据/计划/里程碑存储（~/.dsh/dcs-projects.json，带进程内写锁）
 lib/atlas.js         数据库全图谱（片区/官方工具库/关键词映射/容器公共数据集/Genpilot 范式/模型列表）
