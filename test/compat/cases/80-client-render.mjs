@@ -239,6 +239,20 @@ function extractInternalComponents(names) {
   };
 }
 
+/**
+ * 递归收集元素树里的文本节点（用于断言「渲染出的文案」）。
+ * 视图有大量条件渲染，只校验形状合法不够——还要确认关键信息真的渲染出来了。
+ */
+function collectStrings(node, out = []) {
+  if (node === null || node === undefined || typeof node === 'boolean') return out;
+  if (typeof node === 'string' || typeof node === 'number') { out.push(String(node)); return out; }
+  if (Array.isArray(node)) { for (const c of node) collectStrings(c, out); return out; }
+  if (typeof node === 'object' && node.$$typeof === 'element') {
+    collectStrings(node.props && node.props.children, out);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- 用例
 
 const SKIP_REASON = '需要 React hook 运行时替身';
@@ -493,4 +507,47 @@ test('client-render', 'render/delivery-content-is-xss-safe-end-to-end', '交付�
     else process.env.DSH_HOME = prev;
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+test('client-render', 'render/run-item-shows-executor-backend', '运行详情显示执行后端/主机/作业号（本地与 SSH 长任务可跟踪）', async () => {
+  // L1 能力：executor 标注让同一个「项目管理」窗口既能跟踪 DCS 任务，
+  // 也能跟踪本机（local）与 SSH（ssh/slurm）上的长任务。
+  // 这里真实渲染 RunItem，断言「执行后端 chip」与展开后的作业号确实渲染出来了。
+  const { components, hooks } = extractInternalComponents(['RunItem']);
+  const RunItem = components.RunItem;
+  assert(typeof RunItem === 'function', 'RunItem 应为函数组件');
+
+  const render = (run, open) => {
+    hooks.cursor = 0; hooks.states.length = 0; hooks.refs.length = 0; hooks.effects.length = 0;
+    hooks.states[0] = !!open;             // 第一个 useState 即展开态（false=仅头部）
+    const tree = RunItem({ run, costs: {} });
+    const problems = validateTree(tree, 'RunItem');
+    assertEqual(problems.length, 0, `RunItem 渲染出非法元素树: ${problems.join('; ')}`);
+    return collectStrings(tree).join(' | ');
+  };
+
+  const base = { id: 'r1', version: '1', status: 'running', startedAt: Date.now(), progress: 40, files: { code: [], input: [], output: [] } };
+
+  // ① SSH 运行：头部出现后端 chip（含主机），展开后出现执行位置与作业号
+  const sshOpen = render({ ...base, executor: 'ssh', host: 'c4g-tun', jobIds: ['J01'] }, true);
+  assertIncludes(sshOpen, 'SSH @c4g-tun', 'SSH 运行应显示后端与主机');
+  assertIncludes(sshOpen, '执行位置', '展开后应显示执行位置');
+  assertIncludes(sshOpen, 'c4g-tun', '执行位置应包含主机');
+  assertIncludes(sshOpen, 'J01', '展开后应显示作业号（供 remote_status/remote_logs 跟踪）');
+  // 折叠态不应展开细节
+  const sshClosed = render({ ...base, executor: 'ssh', host: 'c4g-tun', jobIds: ['J01'] }, false);
+  assert(!sshClosed.includes('执行位置'), '折叠时不应渲染展开区细节');
+
+  // ② 本机运行：chip 显示「本机」
+  assertIncludes(render({ ...base, executor: 'local', jobIds: ['4321'] }, true), '本机', 'local 运行应显示「本机」');
+
+  // ③ SLURM 运行：chip 显示 SSH+SLURM，主机与 jobid 可见
+  const slurm = render({ ...base, executor: 'slurm', host: 'hpc01', jobIds: ['998877'] }, true);
+  assertIncludes(slurm, 'SSH+SLURM', 'slurm 运行应显示「SSH+SLURM」（host 变体仍带主机）');
+  assertIncludes(slurm, '998877', 'SLURM jobid 应可见');
+
+  // ④ 未标注后端的普通运行：保持旧行为（只显示 DCS 任务行，不出现「未标注」噪音）
+  const plain = render({ ...base, dcsTaskIds: ['T1'] }, true);
+  assertIncludes(plain, 'DCS 离线任务', 'DCS 运行应显示任务号行');
+  assert(!plain.includes('未标注'), '未标注后端不应产生额外噪音行');
 });

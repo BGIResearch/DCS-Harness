@@ -6,7 +6,8 @@
 //
 // 这一层是「升级后第一时间发现问题」的主力：平台 API 一变，这里立刻红。
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, assert, assertEqual, assertIncludes, ROOT, findDshRoot, dshModulesDir } from '../lib/harness.mjs';
 
@@ -607,5 +608,78 @@ test('integration', 'client/apply-registers-slots', '客户端 apply 在真实 s
   } finally {
     g.window = prevWindow;
     g.document = prevDoc;
+  }
+});
+
+// ---------------------------------------------------------------- 执行后端（本地/SSH）
+
+test('integration', 'tools/run-executor-params-wired', 'dcs_run_start/update 的 executor/job_ids/host 参数真实落盘（本地与 SSH 长任务可跟踪）', async () => {
+  // 本用例走**真实工具层**：注册工具 → 用工具入参创建项目/模块/运行 → 读回项目库。
+  // 价值：lifecycle 直接调 startRun，测不到「工具 schema 参数是否真的接到存储」。
+  const prevHome = process.env.DSH_HOME;
+  const home = mkdtempSync(join(tmpdir(), 'exec-tools-'));
+  process.env.DSH_HOME = home;
+  try {
+    const mod = await import(join(ROOT, 'lib', 'index.js'));
+    const { ctx, state } = makeHostCtx();
+    await mod.apply(ctx);
+    const tool = (n) => state.tools.find((t) => t.name === n);
+    // sessionId 由 exec.agent.session.header.id 提供（真实宿主契约，见 sessionIdOf）
+    const exec = { signal: undefined, workspace: process.cwd(), arguments: {}, agent: { session: { header: { id: 'exec-sess' } } } };
+
+    const tProj = tool('dcs_project_update');
+    const tMod = tool('dcs_module_update');
+    const tStart = tool('dcs_run_start');
+    const tUpd = tool('dcs_run_update');
+    assert(tProj && tMod && tStart && tUpd, '项目/模块/运行工具都应注册');
+
+    // ① 参数确实出现在 schema 里（防止只改 execute 忘了声明参数 → 模型看不见）
+    //    defineTool 已把简写规格转成 JSON Schema，故参数在 parameters.properties 下。
+    const startProps = (tStart.parameters || {}).properties || {};
+    const updProps = (tUpd.parameters || {}).properties || {};
+    assert(startProps.executor, 'dcs_run_start 应声明 executor');
+    assert(startProps.job_ids, 'dcs_run_start 应声明 job_ids');
+    assert(startProps.host, 'dcs_run_start 应声明 host');
+    assert(updProps.executor && updProps.job_ids && updProps.host,
+      'dcs_run_update 应声明 executor/job_ids/host');
+    assertEqual((startProps.executor.enum || []).join(','),
+      'dcs-offline,dcs-container,local,ssh,slurm,manual', 'executor 枚举应覆盖全部后端');
+    assertIncludes(startProps.executor.description, 'ssh', 'executor 描述应提示 ssh 取值');
+
+    // ② 真实调用：建项目 → 建模块 → 以 ssh 后端启动运行
+    const pr = await tProj.execute({ title: 'SSH 长任务', objective: '在远端跑比对' }, exec);
+    assertEqual(pr && pr.ok, true, `建项目失败: ${JSON.stringify(pr)}`);
+    const mr = await tMod.execute({ project_id: pr.project_id, name: '比对', desc: '在 c4g 上跑' }, exec);
+    const moduleId = mr.module ? mr.module.id : mr.module_id;
+    assert(moduleId, `建模块失败: ${JSON.stringify(mr)}`);
+
+    const sr = await tStart.execute({
+      project_id: pr.project_id, module_id: moduleId, executor: 'ssh',
+      job_ids: ['J01'], host: 'c4g-tun', notes: '对话方案：remote_run 提交比对',
+    }, exec);
+    assertEqual(sr && sr.ok, true, `启动运行失败: ${JSON.stringify(sr)}`);
+
+    // ③ 读回：后端/主机/作业号都应落盘
+    const projects = await import(join(ROOT, 'lib', 'projects.js'));
+    let run = projects.getProject(pr.project_id, 'exec-sess').modules[0].runs[0];
+    assertEqual(run.executor, 'ssh', 'executor 应落盘为 ssh');
+    assertEqual(run.host, 'c4g-tun', 'host 应落盘');
+    assertEqual((run.jobIds || []).join(','), 'J01', 'job_ids 应落盘为 jobIds');
+
+    // ④ 更新为 local + 后台 pid：模拟长任务换后端后仍能被跟踪
+    const ur = await tUpd.execute({
+      project_id: pr.project_id, module_id: moduleId, run_id: run.id,
+      status: 'running', progress: 30, executor: 'local', job_ids: ['4321'],
+      oaa: { observation: '远端不可达，改本机跑', assessment: '方案调整', action: '继续' },
+    }, exec);
+    assertEqual(ur && ur.ok, true, `更新运行失败: ${JSON.stringify(ur)}`);
+    run = projects.getProject(pr.project_id, 'exec-sess').modules[0].runs[0];
+    assertEqual(run.executor, 'local', 'executor 应更新为 local');
+    assertEqual((run.jobIds || []).join(','), '4321', 'job_ids 应更新为 4321');
+    assertEqual(run.progress, 30, '进度应落盘');
+  } finally {
+    if (prevHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = prevHome;
+    rmSync(home, { recursive: true, force: true });
   }
 });

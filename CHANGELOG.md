@@ -2,6 +2,21 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.18.0] - 2026-09-16
+
+### 新增：「项目管理」窗口兼容本地与 SSH 执行（executor 执行后端标注）
+
+- **背景**：此前「项目管理」的运行详情只显示 `dcsTaskIds`（DCS 离线任务）与 DCS 费用，本机（会话工作区）与 SSH 远程主机（含 SLURM）上的长任务虽能被同一套模块/运行/OAA 模型登记，却在窗口里"看不出算在哪"，看门狗续跑时也会被文案引导去调 DCS 工具。**模型层本就与执行后端解耦**（模块编排、批量审核、批准后全自动、OAA、看门狗、交付轨迹均与后端无关），本次只补标签与语义。
+- **数据模型**（`lib/projects.js`）：
+  - 运行新增三个字段：`executor`（`dcs-offline` / `dcs-container` / `local` / `ssh` / `slurm` / `manual`）、`jobIds`（外部作业号：remote_run 的 J01、SLURM jobid、本机后台 pid）、`host`（注册的 SSH host id）；导出 `VALID_EXECUTORS` / `EXECUTOR_LABEL`；
+  - **向后兼容**：缺省时按 `dcsTaskIds` 推断为 `dcs-offline`；`listProjects`/`getProject` 读时对旧数据做**只读推断**（不回写磁盘），既有 DCS 项目不会显示成「未标注」；
+  - 交付「执行轨迹」章节自动带上每个运行的后端与主机、并单列作业号（`buildTrajectory`）。
+- **工具**（`lib/index.js`）：`dcs_run_start` / `dcs_run_update` 新增 `executor` / `job_ids` / `host` 参数（snake 与 camel 均接受）；`/v2/costs` 与 `/v2/project-overview` 对非 DCS 后端运行不查 DCS 计费（避免费用串到别的后端）。
+- **看门狗**（`lib/index.js`）：断点续跑文案按后端分支——`ssh/slurm` 提示 `remote_status` / `remote_logs` / `remote_pull`，`local` 提示用 `bash` 核对后台 pid 与产物路径，`manual` 提示先向用户确认进度，DCS 后端保持原提示；并输出 `host`。
+- **窗口**（`lib/client.js`）：运行卡片新增**执行后端 chip**（`本机` / `SSH @host` / `SSH+SLURM` / `DCS 离线` / `DCS 容器` / `人工`，按后端配色），展开后显示「执行位置 · 主机」与「作业号」；项目概览新增**执行后端分布**（如 `DCS 离线 3 · 本机 2 · SSH 1`）；未标注后端不产生噪音行。
+- **流程**：systemPrompt 第 0 条补充「纯本地/SSH 任务可跳过 `dcs_project_create`，直接用 `dcs_project_update` 建 Harness 项目」；第 5 条补充各类后端的登记规范（DCS 离线/在线容器 · 本机 · SSH/SLURM · 人工）与各自适用的场景（容器无此工具、网络不通、数据在本地或远端服务器、大数据不出机）。
+- **测试**：新增 `lifecycle/projects/run-executor-backends`（持久化/切换后端、旧数据推断、非法值归一、轨迹带后端与作业号）、`integration/tools/run-executor-params-wired`（走真实工具层：schema 声明 → 调用 → 落盘 → 改后端，防止「只改 execute 忘了声明参数」）与 `client-render/render/run-item-shows-executor-backend`（真实渲染断言后端 chip、主机与作业号，并确认折叠态不展开、未标注无噪音）——共 199/199 通过。
+
 ## [2.17.3] - 2026-09-09
 
 ### 修复：「项目文件」tab 切换时完全驻留内存（路径/列表/已打开文件/滚动位置均不重置）

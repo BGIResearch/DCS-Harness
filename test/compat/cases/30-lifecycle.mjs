@@ -262,6 +262,73 @@ test('lifecycle', 'projects/module-and-run-lifecycle', '模块 + 运行（含 OA
   });
 });
 
+test('lifecycle', 'projects/run-executor-backends', '运行可标注执行后端（本机/SSH）并向后兼容旧 DCS 数据', async () => {
+  await withIsolatedHome(async (home) => {
+    const {
+      upsertProject, upsertModule, startRun, updateRun, getProject,
+      buildTrajectory, projectsPath, VALID_EXECUTORS,
+    } = await mod('projects.js');
+    await upsertProject({ project_id: '__compat_exec__', title: 'EXEC' });
+    const mres = await upsertModule('__compat_exec__', { name: 'M', desc: 'd' });
+    const m = mres.module || mres;
+    const mid = m.id || m.module_id;
+
+    // ① SSH 后端：executor + job_ids + host 都应被持久化
+    const r1 = await startRun('__compat_exec__', mid, {
+      executor: 'ssh', job_ids: ['J01'], host: 'c4g-tun', notes: '对话方案：在 c4g 上跑比对',
+    });
+    const run1 = r1.run || r1;
+    assertEqual(run1.executor, 'ssh', `executor 应为 ssh，实际 ${run1.executor}`);
+    assertEqual((run1.jobIds || []).join(','), 'J01', 'job_ids（snake）应归一化为 jobIds');
+    assertEqual(run1.host, 'c4g-tun', 'host 应被持久化');
+    // 交付轨迹应带上执行后端与作业号（让「执行轨迹」章节可回溯算在哪）
+    assertIncludes(buildTrajectory(getProject('__compat_exec__')), 'SSH 主机', '轨迹应标注 SSH 后端');
+    assertIncludes(buildTrajectory(getProject('__compat_exec__')), 'J01', '轨迹应带上作业号');
+
+    // ② updateRun 可换后端并补作业号（本地后台 pid）
+    const upd = await updateRun('__compat_exec__', mid, run1.id, { executor: 'local', job_ids: ['4321'], host: '' });
+    assert(upd && upd.ok !== false, `updateRun 失败: ${JSON.stringify(upd)}`);
+    let proj = getProject('__compat_exec__');
+    let target = (proj.modules || []).find((x) => (x.id || x.module_id) === mid);
+    let stored = (target.runs || []).find((r) => r.id === run1.id);
+    assertEqual(stored.executor, 'local', 'executor 应更新为 local');
+    assertEqual((stored.jobIds || []).join(','), '4321', 'job_ids 应更新');
+
+    // ③ 只给 dcs_task_ids（旧调用方）→ 自动推断为 dcs-offline（向后兼容）
+    const r2 = await startRun('__compat_exec__', mid, { dcs_task_ids: ['T1'], notes: 'DCS 离线' });
+    assertEqual((r2.run || r2).executor, 'dcs-offline', '有 DCS 任务号的运行应推断为 dcs-offline');
+
+    // ④ 非法 executor → 留空（不污染枚举），窗口显示「未标注」
+    const r3 = await startRun('__compat_exec__', mid, { executor: 'kubernetes', notes: 'x' });
+    assertEqual((r3.run || r3).executor, '', `非法 executor 应归一化为空，实际 ${(r3.run || r3).executor}`);
+    assert(VALID_EXECUTORS.includes('local') && VALID_EXECUTORS.includes('ssh'), 'VALID_EXECUTORS 应含 local/ssh');
+
+    // ⑤ 旧数据（磁盘上无 executor 字段，仅有 dcsTaskIds）重载后应推断为 dcs-offline
+    const raw = JSON.parse(readFileSync(projectsPath(), 'utf8'));
+    const legacy = {
+      schema: 1,
+      projects: [{
+        id: '__compat_legacy__', title: 'LEGACY', modules: [{
+          id: 'lm', name: 'LM', runs: [{ id: 'lr', version: '1', status: 'done', dcsTaskIds: ['T9'] }],
+        }],
+      }],
+    };
+    writeFileSync(projectsPath(), JSON.stringify(legacy), 'utf8');
+    const legacyProj = getProject('__compat_legacy__');
+    const legacyRun = legacyProj.modules[0].runs[0];
+    assertEqual(legacyRun.executor, 'dcs-offline', '旧数据应推断出 dcs-offline（不显示未标注）');
+    assertEqual((legacyRun.jobIds || []).length, 0, '旧数据 jobIds 应为空数组而非 undefined');
+    // 恢复隔离环境里的原始存储，避免影响后续用例
+    writeFileSync(projectsPath(), JSON.stringify(raw), 'utf8');
+
+    // ⑥ 换后端后轨迹同步反映（local + 新作业号）
+    proj = getProject('__compat_exec__');
+    const traj = buildTrajectory(proj);
+    assertIncludes(traj, '本机', '轨迹应反映更新后的本机后端');
+    assertIncludes(traj, '4321', '轨迹应带上更新后的作业号');
+  });
+});
+
 test('lifecycle', 'projects/rerun-creates-v2', '重跑同一模块生成 v2 且保留 v1', async () => {
   await withIsolatedHome(async () => {
     const { upsertProject, upsertModule, startRun, getProject } = await mod('projects.js');
