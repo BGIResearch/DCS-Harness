@@ -2,10 +2,152 @@
 // 目的是把「与平台无关的正确性」也纳入回归网——平台升级时常伴随
 // Node 版本/内置模块行为变化，这层能快速定位是平台问题还是插件问题。
 
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { test, assert, assertEqual, assertIncludes, ROOT } from '../lib/harness.mjs';
 
 const mod = (p) => import(join(ROOT, 'lib', p));
+
+// ---------------------------------------------------------------- remote-jobs（SSH 作业账本）
+
+/** 在临时目录里造一个带 .dsh/remotes 的工作区根，跑完即清理。 */
+async function withLedger(files, fn) {
+  const root = mkdtempSync(join(tmpdir(), 'dcs-ledger-'));
+  try {
+    const dir = join(root, '.dsh', 'remotes');
+    mkdirSync(dir, { recursive: true });
+    for (const [name, content] of Object.entries(files)) {
+      writeFileSync(join(dir, name), typeof content === 'string' ? content : JSON.stringify(content), 'utf8');
+    }
+    return await fn(root, dir);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('unit', 'remote-jobs/state-mapping', '作业状态标签与运行状态映射覆盖全部枚举', async () => {
+  const m = await mod('remote-jobs.js');
+  assert(Array.isArray(m.REMOTE_JOB_STATES) && m.REMOTE_JOB_STATES.length > 0, 'REMOTE_JOB_STATES 非空');
+  for (const s of m.REMOTE_JOB_STATES) {
+    assert(m.REMOTE_STATE_LABEL[s], `状态 ${s} 缺少中文标签`);
+    assert(['pending', 'running', 'done', 'failed', 'blocked'].includes(m.remoteStateToRunStatus(s)),
+      `状态 ${s} 的 run 映射非法: ${m.remoteStateToRunStatus(s)}`);
+  }
+  // 关键语义：成功=done、失败/终止=failed、运行中/已提交=running
+  assertEqual(m.remoteStateToRunStatus('succeeded'), 'done', 'succeeded 应为 done');
+  assertEqual(m.remoteStateToRunStatus('killed'), 'failed', 'killed 应为 failed');
+  assertEqual(m.remoteStateToRunStatus('running'), 'running', 'running 应为 running');
+  assertEqual(m.remoteStateToRunStatus('莫名其妙的取值'), 'pending', '未知状态应回落 pending');
+});
+
+test('unit', 'remote-jobs/read-and-normalize', '读作业账本：字段归一、时长计算、按提交时间倒序', async () => {
+  const m = await mod('remote-jobs.js');
+  await withLedger({
+    'jobs.json': {
+      schema: 1,
+      jobs: [
+        { id: 'J01', host: 'c4g-tun', title: 'fastp', state: 'running', mode: 'direct', pid: 4321, submittedAt: '2026-09-16T10:00:00.000Z', startedAt: '2026-09-16T10:00:05.000Z' },
+        { id: 'J02', host: 'hpc01', title: 'hisat2', state: 'succeeded', mode: 'slurm', slurmJobId: '998877', submittedAt: '2026-09-16T09:00:00.000Z', startedAt: '2026-09-16T09:05:00.000Z', finishedAt: '2026-09-16T09:35:00.000Z', exitCode: 0, stdoutLog: '/tmp/out.log' },
+        // 脏数据：状态非法、时间字段缺失、字段类型异常 —— 都不能让读取抛错
+        { id: 'J03', host: 'hpc01', state: 'weird', submittedAt: 'not-a-date', exitCode: 'x' },
+      ],
+    },
+    'allowlist.json': { schema: 1, hosts: [{ host: 'c4g-tun', grantedAt: '2026-09-16T08:00:00.000Z', grantedBy: 'user' }] },
+  }, async (root) => {
+    const r = m.readRemoteJobs(root, { now: Date.parse('2026-09-16T10:10:00.000Z') });
+    assertEqual(r.ok, true, `读取应成功: ${r.error}`);
+    assertEqual(r.jobs.length, 3, '3 条作业都应读到（含脏数据）');
+    // 倒序：J01(10:00) > J02(09:00) > J03(无时间→0)
+    assertEqual(r.jobs[0].id, 'J01', '第一条应为最近提交的 J01');
+    assertEqual(r.jobs[2].id, 'J03', '无时间的脏数据应排最后');
+    const j1 = r.jobs[0];
+    assertEqual(j1.state, 'running', 'J01 状态应为 running');
+    assertEqual(j1.label, m.REMOTE_STATE_LABEL.running, 'J01 应有中文标签');
+    assertEqual(j1.runStatus, 'running', 'J01 runStatus 应为 running');
+    // 运行中：startedAt → now(10:10) = 9m55s ≈ 595000ms
+    assertEqual(j1.durationMs, 595000, `运行中时长应按 now 计算，实际 ${j1.durationMs}`);
+    const j2 = r.jobs[1];
+    assertEqual(j2.durationMs, 30 * 60 * 1000, 'J02 时长应为 start→finish 的 30 分钟');
+    assertEqual(j2.slurmJobId, '998877', 'slurmJobId 应保留');
+    assertEqual(j2.exitCode, 0, 'exitCode 应保留');
+    assertIncludes(r.jobs[2].state, 'unknown', '非法状态应归一为 unknown');
+    assertEqual(r.jobs[2].durationMs, null, '无时间的作业时长为 null（不显示噪音）');
+    assertEqual(r.allowlist.length, 1, '白名单应读到 1 台主机');
+    assertEqual(r.allowlist[0].host, 'c4g-tun', '白名单主机 id 应保留');
+    assertEqual(r.missing, false, '账本存在时 missing 应为 false');
+  });
+});
+
+test('unit', 'remote-jobs/missing-and-corrupt-are-safe', '账本缺失/损坏都不抛错（窗口渲染要稳）', async () => {
+  const m = await mod('remote-jobs.js');
+  // ① 文件不存在：ok=true + missing=true + 空列表
+  await withLedger({}, async (root) => {
+    const r = m.readRemoteJobs(root);
+    assertEqual(r.ok, true, '文件不存在不应视为错误');
+    assertEqual(r.missing, true, 'missing 应为 true');
+    assertEqual(r.jobs.length, 0, 'jobs 应为空');
+  });
+  // ② JSON 损坏：ok=false + 错误信息 + 空列表（不抛异常）
+  await withLedger({ 'jobs.json': '{ 不是合法 JSON' }, async (root) => {
+    const r = m.readRemoteJobs(root);
+    assertEqual(r.ok, false, '损坏账本应报 ok=false');
+    assert(r.error && r.error.length > 0, '损坏账本应带错误信息');
+    assertEqual(r.jobs.length, 0, '损坏账本应回退空列表');
+  });
+});
+
+test('unit', 'remote-jobs/root-detection-matches-dsh-science', '工作区根探测与 dsh-science 同规则（向上找 .dsh/.git）', async () => {
+  const m = await mod('remote-jobs.js');
+  await withLedger({}, async (root) => {
+    const nested = join(root, 'analysis', 'step1');
+    mkdirSync(nested, { recursive: true });
+    assertEqual(m.findWorkspaceRoot(nested), root, '嵌套目录应解析到含 .dsh 的工作区根');
+    assertEqual(m.findWorkspaceRoot(root), root, '根本身应解析为自己');
+    assertEqual(m.remoteJobsPath(root), join(root, '.dsh', 'remotes', 'jobs.json'), '账本路径应可预测');
+  });
+  // 无标记目录：应回退到起点或其某个祖先（不越界到 HOME）
+  const plain = mkdtempSync(join(tmpdir(), 'dcs-plain-'));
+  try {
+    const got = m.findWorkspaceRoot(plain);
+    assert(plain === got || plain.startsWith(got + sep), `无标记时应回退到起点或祖先，实际 ${got}`);
+  } finally {
+    rmSync(plain, { recursive: true, force: true });
+  }
+});
+
+test('unit', 'remote-jobs/index-link-and-summary', '作业索引：按 id/slurmJobId/pid 关联运行并汇总', async () => {
+  const m = await mod('remote-jobs.js');
+  const jobs = [
+    { id: 'J01', host: 'c4g-tun', state: 'running', runStatus: 'running' },
+    { id: 'J02', host: 'hpc01', state: 'succeeded', runStatus: 'done', slurmJobId: '998877' },
+    { id: 'J03', host: 'hpc01', state: 'failed', runStatus: 'failed' },
+  ];
+  const byId = m.indexJobsById(jobs);
+  // 三种登记口径都能命中同一个作业
+  assertEqual(byId.get('J02').id, 'J02', '按 id 应命中');
+  assertEqual(byId.get('998877').id, 'J02', '按 slurmJobId 应命中同一作业');
+  const run = { id: 'run-1', jobIds: ['J01', '998877'] };
+  const mine = m.jobsForRun(run, byId);
+  assertEqual(mine.length, 2, '应按 jobIds（含 slurmJobId）关联到 2 个作业');
+  assertEqual(m.jobsForRun({ id: 'x', jobIds: [] }, byId).length, 0, '无作业号的运行应返回空');
+  const project = { modules: [{ runs: [run] }] };
+  const sum = m.remoteSummary(project, byId);
+  assertEqual(sum.total, 2, '汇总应只计已关联的作业');
+  assertEqual(sum.unlinked, 1, '未关联运行 J03 应计入 unlinked');
+  assertEqual(sum.byState.running, 1, 'running 计数应为 1');
+  assertEqual(sum.hosts.length, 2, '应汇总 2 台主机');
+  assert(sum.linked['run-1'] && sum.linked['run-1'].length === 2, 'linked 应记录 run→作业');
+});
+
+test('unit', 'remote-jobs/fmt-duration', '时长格式化覆盖秒/分/时与空值', async () => {
+  const { fmtDuration } = await mod('remote-jobs.js');
+  assertEqual(fmtDuration(null), '', 'null → 空串');
+  assertEqual(fmtDuration(undefined), '', 'undefined → 空串');
+  assertEqual(fmtDuration(4500), '4s', '4.5s → 4s');
+  assertEqual(fmtDuration(125000), '2m05s', '125s → 2m05s');
+  assertEqual(fmtDuration(3725000), '1h02m', '1h2m5s → 1h02m');
+});
 
 // ---------------------------------------------------------------- atlas
 

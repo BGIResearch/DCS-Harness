@@ -6,7 +6,7 @@
 //
 // 这一层是「升级后第一时间发现问题」的主力：平台 API 一变，这里立刻红。
 
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, assert, assertEqual, assertIncludes, ROOT, findDshRoot, dshModulesDir } from '../lib/harness.mjs';
@@ -608,6 +608,128 @@ test('integration', 'client/apply-registers-slots', '客户端 apply 在真实 s
   } finally {
     g.window = prevWindow;
     g.document = prevDoc;
+  }
+});
+
+// ---------------------------------------------------------------- 远程作业路由（L2）
+
+/**
+ * 构造最小 req/res 以**真实调用**宿主前缀路由 handler（不是静态比对字符串）。
+ * 注意：readBody 在 handler 内部同步注册 data/end 监听，因此必须先调用 handler
+ * 拿到 promise，再等一个 tick 后 emit 请求体。
+ */
+function fakeReqRes(method, url, bodyObj) {
+  const res = {
+    status: 0, body: '', headers: null,
+    writeHead(s, h) { this.status = s; this.headers = h; },
+    end(b) { this.body = b || ''; },
+    setHeader() {}, on() {}, destroy() {},
+  };
+  const listeners = {};
+  const req = {
+    method, url, headers: {},
+    on(ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); return req; },
+    destroy() {},
+  };
+  const emit = async (handlerPromise) => {
+    await new Promise((r) => setImmediate(r));
+    if (bodyObj !== undefined) for (const f of (listeners.data || [])) f(Buffer.from(JSON.stringify(bodyObj)));
+    for (const f of (listeners.end || [])) f();
+    await handlerPromise;
+  };
+  return { req, res, emit, json: () => JSON.parse(res.body) };
+}
+
+test('integration', 'http/remotes-route-reads-ssh-ledger', 'GET /v2/remotes 真实读 SSH 作业账本并关联运行；POST /sync 唤醒 agent', async () => {
+  const prevHome = process.env.DSH_HOME;
+  const home = mkdtempSync(join(tmpdir(), 'remotes-home-'));
+  const root = mkdtempSync(join(tmpdir(), 'remotes-root-'));
+  process.env.DSH_HOME = home;
+  try {
+    // ① 造一个工作区根 + dsh-science 的作业账本（本插件只读它）
+    const ledgerDir = join(root, '.dsh', 'remotes');
+    mkdirSync(ledgerDir, { recursive: true });
+    writeFileSync(join(ledgerDir, 'jobs.json'), JSON.stringify({
+      schema: 1,
+      jobs: [
+        { id: 'J01', host: 'c4g-tun', title: 'fastp', state: 'running', mode: 'direct', pid: 4321, submittedAt: '2026-09-16T10:00:00.000Z', startedAt: '2026-09-16T10:00:05.000Z' },
+        { id: 'J02', host: 'hpc01', title: 'hisat2', state: 'succeeded', mode: 'slurm', submittedAt: '2026-09-16T09:00:00.000Z', startedAt: '2026-09-16T09:05:00.000Z', finishedAt: '2026-09-16T09:35:00.000Z', exitCode: 0 },
+      ],
+    }), 'utf8');
+    writeFileSync(join(ledgerDir, 'allowlist.json'), JSON.stringify({ schema: 1, hosts: [{ host: 'c4g-tun', grantedAt: '2026-09-16T08:00:00.000Z', grantedBy: 'user' }] }), 'utf8');
+
+    // ② 建项目（显式 workspace=root，路由据此定位账本）+ 一个 SSH 运行
+    const projects = await import(join(ROOT, 'lib', 'projects.js'));
+    await projects.upsertProject({ project_id: '__remote_ui__', title: '远程长任务', workspace: root }, 'sess-r');
+    const mres = await projects.upsertModule('__remote_ui__', { name: '比对' }, 'sess-r');
+    const mid = (mres.module || mres).id;
+    const rres = await projects.startRun('__remote_ui__', mid, {
+      executor: 'ssh', host: 'c4g-tun', job_ids: ['J01'], notes: '对话方案：remote_run 提交',
+    }, 'sess-r');
+    const runId = (rres.run || rres).id;
+
+    // ③ 装载插件，取出前缀路由 handler
+    const mod = await import(join(ROOT, 'lib', 'index.js'));
+    const { ctx } = makeHostCtx();
+    await mod.apply(ctx);
+    const route = ctx.webServer.routes.find((r) => r.kind === 'prefix' && r.path === '/api/dcs-cloud');
+    assert(route, '应注册 /api/dcs-cloud 前缀路由');
+    const call = async (method, path, body) => {
+      const f = fakeReqRes(method, path, body);
+      const p = route.handler(f.req, f.res);
+      await f.emit(p);
+      return f;
+    };
+
+    // ④ GET /v2/remotes：读到 2 条作业，工作区根解析正确，关联到运行
+    const r1 = await call('GET', '/api/dcs-cloud/v2/remotes?projectId=__remote_ui__&sessionId=sess-r');
+    assertEqual(r1.res.status, 200, `路由应 200，实际 ${r1.res.status}`);
+    const d1 = r1.json();
+    assertEqual(d1.ok, true, `远程作业路由应 ok: ${JSON.stringify(d1).slice(0, 300)}`);
+    assertEqual(d1.root, root, '工作区根应解析为项目记录的 workspace');
+    assertIncludes(d1.ledger, '.dsh/remotes/jobs.json', '应回传账本路径');
+    assertEqual(d1.jobs.length, 2, '应读到 2 条作业');
+    assertEqual(d1.missing, false, '账本存在时不应标记 missing');
+    assertEqual(d1.summary.total, 1, '汇总应关联到 1 个作业（J01→本次运行）');
+    assertEqual(d1.summary.byState.running, 1, '运行中作业计数应为 1');
+    assertEqual(d1.summary.unlinked, 1, 'J02 未关联运行应计入 unlinked');
+    assertEqual(d1.allowlist[0].host, 'c4g-tun', '应回传本项目已授权主机');
+    assert(Array.isArray(d1.registeredHosts), 'registeredHosts 应为数组');
+    assert(d1.stateLabels && d1.stateLabels.running, '应回传状态标签表（客户端渲染用）');
+
+    // ⑤ 主机筛选：只看 hpc01
+    const r2 = await call('GET', '/api/dcs-cloud/v2/remotes?projectId=__remote_ui__&sessionId=sess-r&host=hpc01');
+    const d2 = r2.json();
+    assertEqual(d2.jobs.length, 1, '按主机筛选应只剩 1 条');
+    assertEqual(d2.jobs[0].id, 'J02', '筛选结果应为 hpc01 上的 J02');
+
+    // ⑥ 项目总览：非 DCS 运行由远程作业补进同一口径（不查 dcs CLI）
+    const r3 = await call('GET', '/api/dcs-cloud/v2/project-overview?projectId=__remote_ui__&sessionId=sess-r');
+    const d3 = r3.json();
+    assertEqual(d3.ok, true, '总览路由应 ok');
+    assert(d3.remote, '总览应包含 remote 聚合');
+    assertEqual(d3.remote.total, 1, '总览 remote.total 应为 1');
+    assert(d3.sharded[runId], 'SSH 运行应出现在 sharded 聚合里');
+    assertEqual(d3.sharded[runId].executor, 'ssh', 'sharded 应标注执行为 ssh');
+    assertEqual(d3.sharded[runId].host, 'c4g-tun', 'sharded 应标注主机');
+    assertEqual(d3.taskSummary.total, 1, 'SSH 作业应计入 taskSummary.total');
+    assertEqual(d3.taskSummary.running, 1, 'SSH 作业状态应计入 taskSummary.running');
+
+    // ⑦ POST /v2/remotes/sync：唤醒 agent 去 remote_status（无 live agent 时 woken=false 但不报错）
+    const r4 = await call('POST', '/api/dcs-cloud/v2/remotes/sync', { projectId: '__remote_ui__', sessionId: 'sess-r' });
+    assertEqual(r4.res.status, 200, '同步路由应 200');
+    const d4 = r4.json();
+    assertEqual(d4.ok, true, `同步路由应 ok: ${JSON.stringify(d4)}`);
+    assertEqual(d4.runs, 1, '应识别出 1 个待同步的 SSH 运行');
+    assertEqual(d4.jobs, 2, '应回报账本里的作业数');
+    // 缺 projectId 时应 400（而不是 500/静默）
+    const r5 = await call('POST', '/api/dcs-cloud/v2/remotes/sync', {});
+    assertEqual(r5.res.status, 400, '缺 projectId 应 400');
+  } finally {
+    if (prevHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = prevHome;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

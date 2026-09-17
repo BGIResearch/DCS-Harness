@@ -2,6 +2,21 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.19.0] - 2026-09-16
+
+### 新增：「项目管理」窗口的「远程作业」区（只读 SSH 作业账本 + 一键同步）
+
+- **背景**：v2.18.0 给运行打上了 `executor` 标签，但 SSH/本机长任务的**实时状态、时长、退出码**仍看不见（要用户自己看终端），运行卡片也只能显示"已提交了哪几个作业号"。
+- **新增模块 `lib/remote-jobs.js`（Host 侧，纯 Node，只读）**：读取 dsh-science remote-compute 引擎的账本 —— `<项目根>/.dsh/remotes/jobs.json`（作业）、`allowlist.json`（本项目已授权主机）、`$DSH_HOME/remotes/hosts.json`（全机主机摘要）。含：作业字段归一（脏数据/损坏 JSON 都不抛错）、状态中文标签与 → 运行状态映射、时长计算（运行中按 now 计）、`id/slurmJobId/pid` 三口径索引、`remoteSummary` 汇总（已关联/未关联）、`fmtDuration`、以及与 dsh-science `findProjectRoot` 同规则的工作区根探测（跳过 HOME）。**本插件不发起 ssh**：写方仍是 remote-compute，避免两个插件抢写。
+- **路由（`lib/index.js`）**：
+  - `GET /v2/remotes?projectId=&sessionId=&host=&jobIds=` → 作业列表（状态/时长/退出码/日志路径）+ 已授权主机 + 已注册主机摘要 + 与运行的关联汇总 + 状态标签表；支持按主机/作业号过滤（汇总仍基于全量，避免误报"未关联"）。
+  - `POST /v2/remotes/sync` → 唤醒 agent 执行 `remote_status → remote_logs/remote_pull → dcs_run_update`（agent 不在线时返回 `woken:false` 且前端给兜底提示），不重复提交、不重跑已完成模块。
+  - `GET /v2/project-overview` → 新增 `remote` 聚合（root/账本/状态计数/主机/已关联），并把**非 DCS 运行的远程作业进度并入同一 `taskSummary`/`sharded` 口径**（本机/SSH 与 DCS 任务在总览里同构）。
+- **项目模型（`lib/projects.js`）**：新增 `workspace`（工作区根），用于定位 SSH 作业账本；留空时按会话 cwd 向上找 `.dsh`/`.git` 推断（与 dsh-science 同规则），`dcs_project_update` 新增同名参数。
+- **窗口（`lib/client.js`）**：新增「🖥️ 远程作业」卡片（仅在有远程运行时出现）——状态计数 chips、逐条作业（状态/作业号@主机/标题/模式/时长/退出码/关联到哪个模块的哪次运行/错误摘要）、工作区根与账本路径、已注册/已授权主机、「🔄 同步远程状态」按钮；`RunItem` 关联账本后显示**作业状态 chip**、展开可见作业明细与日志路径，非 DCS 运行改用**墙钟时长**替代 ¥ 费用；15s 静默轮询。
+- **流程**：systemPrompt 第 5 条补充"窗口远程作业区直接读账本 + 同步按钮会唤醒 remote_status → dcs_run_update，因此 job_ids/host 必须写准"。
+- **测试**：新增 6 条 `remote-jobs/*` 单元用例（状态映射、归一与时长、缺失/损坏安全、根探测、索引与汇总、时长格式化）+ `http/remotes-route-reads-ssh-ledger`（**真实调用路由 handler**：读账本、主机筛选、总览聚合、sync 唤醒、缺参数 400）+ 2 条客户端渲染用例（远程作业卡片、RunItem 关联作业与时长）——共 208/208 通过。
+
 ## [2.18.0] - 2026-09-16
 
 ### 新增：「项目管理」窗口兼容本地与 SSH 执行（executor 执行后端标注）

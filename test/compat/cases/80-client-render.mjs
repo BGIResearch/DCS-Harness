@@ -509,6 +509,88 @@ test('client-render', 'render/delivery-content-is-xss-safe-end-to-end', '交付�
   }
 });
 
+test('client-render', 'render/remote-jobs-card-shows-ssh-ledger', '远程作业卡片渲染作业状态/主机/时长，并在无远程作业时隐藏', async () => {
+  // L2 能力：SSH/本机长任务的状态、时长、退出码与所属主机在窗口里可见。
+  const { components, hooks } = extractInternalComponents(['RemoteJobsCard']);
+  const Card = components.RemoteJobsCard;
+  assert(typeof Card === 'function', 'RemoteJobsCard 应为函数组件');
+
+  const render = (props) => {
+    hooks.cursor = 0; hooks.states.length = 0; hooks.refs.length = 0; hooks.effects.length = 0;
+    const tree = Card(props);
+    if (tree === null) return { tree, text: '' };
+    const problems = validateTree(tree, 'RemoteJobsCard');
+    assertEqual(problems.length, 0, `RemoteJobsCard 渲染出非法元素树: ${problems.join('; ')}`);
+    return { tree, text: collectStrings(tree).join(' | ') };
+  };
+
+  const project = {
+    id: 'p1', title: 'T',
+    modules: [{
+      id: 'm1', name: '比对',
+      runs: [{ id: 'r1', version: '1', status: 'running', executor: 'ssh', host: 'c4g-tun', jobIds: ['J01'] }],
+    }],
+  };
+  const remotes = {
+    root: '/tmp/ws', ledger: '/tmp/ws/.dsh/remotes/jobs.json', missing: false,
+    jobs: [
+      { id: 'J01', host: 'c4g-tun', title: 'fastp', state: 'running', mode: 'direct', durationMs: 125000 },
+      { id: 'J02', host: 'hpc01', title: 'hisat2', state: 'succeeded', mode: 'slurm', slurmJobId: '998877', exitCode: 0, durationMs: 1800000 },
+    ],
+    allowlist: [{ host: 'c4g-tun' }],
+    registeredHosts: [{ id: 'c4g-tun' }, { id: 'hpc01' }],
+  };
+
+  // ① 有远程作业：作业行、状态、主机、时长、关联运行、同步按钮都应出现
+  const a = render({ sessionId: 's', project, remotes });
+  assert(a.text.length > 0, '有远程作业时不应返回 null');
+  assertIncludes(a.text, '远程作业', '应显示卡片标题');
+  assertIncludes(a.text, 'J01', '应显示作业号 J01');
+  assertIncludes(a.text, 'J02', '应显示作业号 J02');
+  assertIncludes(a.text, 'c4g-tun', '应显示主机');
+  assertIncludes(a.text, '运行中', '应显示中文状态（运行中）');
+  assertIncludes(a.text, '成功', '应显示中文状态（成功）');
+  assertIncludes(a.text, '2m05s', '应显示格式化时长');
+  assertIncludes(a.text, '/tmp/ws', '应显示工作区根');
+  assertIncludes(a.text, '同步远程状态', '应有同步按钮');
+  assertIncludes(a.text, '→ 比对 v1', '关联到运行时应显示模块与版本');
+  assertIncludes(a.text, '未关联运行', '未关联运行的作业应明确标注');
+
+  // ② 账本损坏 / 缺失：仍能渲染（不抛错），并提示账本尚未生成
+  const b = render({ sessionId: 's', project, remotes: { root: '/tmp/ws', ledger: '/x/jobs.json', missing: true, jobs: [], allowlist: [], registeredHosts: [] } });
+  assertIncludes(b.text, '账本尚未生成', '缺账本时应给出原因提示');
+
+  // ③ 纯 DCS 项目（无远程运行、无作业）：卡片整体隐藏，不给窗口添噪音
+  const plain = render({ sessionId: 's', project: { id: 'p2', modules: [{ id: 'm', runs: [{ id: 'r', executor: 'dcs-offline', dcsTaskIds: ['T1'] }] }] }, remotes: { jobs: [] } });
+  assertEqual(plain.tree, null, '无远程作业时卡片应返回 null（隐藏）');
+});
+
+test('client-render', 'render/run-item-links-remote-job', 'RunItem 关联远程作业：显示作业状态 chip、时长与作业明细', async () => {
+  const { components, hooks } = extractInternalComponents(['RunItem']);
+  const RunItem = components.RunItem;
+  const render = (run, jobsById, open) => {
+    hooks.cursor = 0; hooks.states.length = 0; hooks.refs.length = 0; hooks.effects.length = 0;
+    hooks.states[0] = !!open;
+    const tree = RunItem({ run, costs: {}, jobsById });
+    const problems = validateTree(tree, 'RunItem');
+    assertEqual(problems.length, 0, `RunItem 渲染出非法元素树: ${problems.join('; ')}`);
+    return collectStrings(tree).join(' | ');
+  };
+  const base = { id: 'r1', version: '1', status: 'running', startedAt: Date.now() - 125000, progress: 40, files: { code: [], input: [], output: [] } };
+  const jobsById = { J01: { id: 'J01', host: 'c4g-tun', state: 'running', mode: 'direct', durationMs: 125000, stdoutLog: '/tmp/out.log' } };
+
+  const open = render({ ...base, executor: 'ssh', host: 'c4g-tun', jobIds: ['J01'] }, jobsById, true);
+  assertIncludes(open, '作业 运行中', '头部应显示作业状态 chip');
+  assertIncludes(open, '时长 ', '非 DCS 运行应显示墙钟时长（替代 ¥ 费用）');
+  assertIncludes(open, 'J01@c4g-tun', '展开后应显示作业明细（作业号@主机）');
+  assertIncludes(open, '/tmp/out.log', '展开后应显示日志路径（便于 remote_logs 排查）');
+
+  // 账本里没有该作业时：不应出现作业 chip（回退到 L1 的后端 chip 行为）
+  const noJob = render({ ...base, executor: 'ssh', host: 'c4g-tun', jobIds: ['J99'] }, jobsById, false);
+  assert(!noJob.includes('作业 '), '账本无记录时不应显示作业状态 chip');
+  assertIncludes(noJob, 'SSH @c4g-tun', '无作业记录时仍应显示执行后端');
+});
+
 test('client-render', 'render/run-item-shows-executor-backend', '运行详情显示执行后端/主机/作业号（本地与 SSH 长任务可跟踪）', async () => {
   // L1 能力：executor 标注让同一个「项目管理」窗口既能跟踪 DCS 任务，
   // 也能跟踪本机（local）与 SSH（ssh/slurm）上的长任务。
