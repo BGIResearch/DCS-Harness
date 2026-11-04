@@ -12,6 +12,41 @@ const DSH_ROOT = findDshRoot();
 const MODS = dshModulesDir(DSH_ROOT);
 
 /**
+ * 极简 semver 范围判定（零依赖）：支持 `>=a <b` 组合与 `^a.b.c`。
+ * 只比较主次修订三段数字、**忽略预发布段** —— 与 dsh 0.2.x 平台预检
+ * (`semver.satisfies(..., { includePrerelease: true })`) 的口径一致：
+ * 对 0.2.1-rc.5 这类预发布版，平台按 0.2.1 判断是否在范围内。
+ * 不足：不支持 `~` / `||` / `x` 通配；本仓库的声明用不到，出现时请补。
+ */
+function satisfiesRange(version, range) {
+  const core = (s) => String(s).trim().replace(/^[\^~<>=]+/, '').split('-')[0]
+    .split('.').map((x) => parseInt(x, 10) || 0);
+  const cmp = (a, b) => {
+    for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i];
+    return 0;
+  };
+  const v = core(version);
+  for (const part of String(range).trim().split(/\s+/).filter(Boolean)) {
+    const bound = core(part);
+    if (part.startsWith('^')) {
+      const hi = bound[0] > 0 ? [bound[0] + 1, 0, 0] : [0, bound[1] + 1, 0];
+      if (cmp(v, bound) < 0 || cmp(v, hi) >= 0) return false;
+    } else if (part.startsWith('>=')) {
+      if (cmp(v, bound) < 0) return false;
+    } else if (part.startsWith('<=')) {
+      if (cmp(v, bound) > 0) return false;
+    } else if (part.startsWith('<')) {
+      if (cmp(v, bound) >= 0) return false;
+    } else if (part.startsWith('>')) {
+      if (cmp(v, bound) <= 0) return false;
+    } else if (part && cmp(v, bound) !== 0) {
+      return false; // 裸版本号 = 精确匹配
+    }
+  }
+  return true;
+}
+
+/**
  * 解析 @deepseek-ai/<pkg> 的 package.json（在 modules dir 与顶层 root 两处查找）。
  * 未找到时抛错并**列出尝试过的路径** —— 与 importDsh 一致：
  * 静默返回 null 会让下游报出误导性的「缺字段」而非「包不存在」。
@@ -75,16 +110,13 @@ test('contract', 'platform/dsh-tools-version', 'dsh-tools 版本与插件 peerDe
   const v = String(toolsPkg.version || '');
   const peer = (PLUGIN_PKG.peerDependencies || {})['@deepseek-ai/dsh-tools'] || '';
   assert(v, 'dsh-tools 版本缺失');
-  // peer 声明形如 ^0.1.1-rc.2；这里只校验主次版本线一致（0.1.x）
-  const m = peer.match(/(\d+)\.(\d+)\./);
-  if (m) {
-    const [pmaj, pmin] = [Number(m[1]), Number(m[2])];
-    const [amaj, amin] = v.split('.').map((x) => parseInt(x, 10));
-    assert(
-      amaj === pmaj && amin === pmin,
-      `dsh-tools 实际 ${v} 超出 peerDependencies 声明的 ${peer} 主次版本线——升级 peerDependencies 或适配 API`,
-    );
-  }
+  // peer 既可能是 ^0.1.1-rc.2，也可能是 ">=0.1.1-rc.2 <0.3.0" 这类区间：
+  // 用与平台预检同口径的判定，避免「声明已放宽、测试还按老规则误报」。
+  assert(peer, 'peerDependencies 应声明 @deepseek-ai/dsh-tools 的兼容范围');
+  assert(
+    satisfiesRange(v, peer),
+    `dsh-tools 实际 ${v} 不在 peerDependencies 声明的 ${peer} 范围内——升级 peerDependencies 或适配 API`,
+  );
 });
 
 // ---------------------------------------------------------------- defineTool

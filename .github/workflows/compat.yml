@@ -40,8 +40,22 @@ jobs:
           ROOT="$(npm root -g)"
           test -f "$ROOT/@deepseek-ai/dsh/package.json" || { echo "未找到 dsh: $ROOT"; exit 1; }
           echo "DSH_ROOT=$ROOT" >> "$GITHUB_ENV"
+          # 全局安装时 dsh-tools 位于 dsh 自己的 node_modules 下，不会提升到 top-level。
+          TOOLS="$ROOT/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tools"
+          [ -d "$TOOLS" ] || TOOLS="$ROOT/@deepseek-ai/dsh-tools"
+          test -f "$TOOLS/package.json" || { echo "未找到 dsh-tools: $TOOLS"; exit 1; }
+          echo "DSH_TOOLS=$TOOLS" >> "$GITHUB_ENV"
           node -e "console.log('dsh', require('$ROOT/@deepseek-ai/dsh/package.json').version)"
-          node -e "console.log('dsh-tools', require('$ROOT/@deepseek-ai/dsh-tools/package.json').version)"
+          node -e "console.log('dsh-tools', require('$TOOLS/package.json').version)"
+
+      # lib/index.js 以裸名 import '@deepseek-ai/dsh-tools'（该包由宿主提供，不是插件的
+      # dependencies）。checkout 出来的仓库没有 node_modules，这里把**宿主那份**链接进来：
+      # 既让加载/集成层能跑，又保证测到的是真实宿主实例，而不是另装的一份副本。
+      - name: 链接宿主 dsh-tools
+        run: |
+          mkdir -p node_modules/@deepseek-ai
+          ln -sfn "$DSH_TOOLS" node_modules/@deepseek-ai/dsh-tools
+          node -e "import('@deepseek-ai/dsh-tools').then((m) => console.log('dsh-tools 可导入，defineTool:', typeof m.defineTool))"
 
       # 退出码语义：0=全通过 / 1=有用例失败 / 2=环境配置错误
       - name: 运行兼容性测试
