@@ -2,11 +2,11 @@
 
 本项目的所有显著变更记录于此。版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [2.19.0] - 2026-09-16
+## [2.17.5] - 2026-09-16
 
 ### 新增：「项目管理」窗口的「远程作业」区（只读 SSH 作业账本 + 一键同步）
 
-- **背景**：v2.18.0 给运行打上了 `executor` 标签，但 SSH/本机长任务的**实时状态、时长、退出码**仍看不见（要用户自己看终端），运行卡片也只能显示"已提交了哪几个作业号"。
+- **背景**：v2.17.4 给运行打上了 `executor` 标签，但 SSH/本机长任务的**实时状态、时长、退出码**仍看不见（要用户自己看终端），运行卡片也只能显示"已提交了哪几个作业号"。
 - **新增模块 `lib/remote-jobs.js`（Host 侧，纯 Node，只读）**：读取 dsh-science remote-compute 引擎的账本 —— `<项目根>/.dsh/remotes/jobs.json`（作业）、`allowlist.json`（本项目已授权主机）、`$DSH_HOME/remotes/hosts.json`（全机主机摘要）。含：作业字段归一（脏数据/损坏 JSON 都不抛错）、状态中文标签与 → 运行状态映射、时长计算（运行中按 now 计）、`id/slurmJobId/pid` 三口径索引、`remoteSummary` 汇总（已关联/未关联）、`fmtDuration`、以及与 dsh-science `findProjectRoot` 同规则的工作区根探测（跳过 HOME）。**本插件不发起 ssh**：写方仍是 remote-compute，避免两个插件抢写。
 - **路由（`lib/index.js`）**：
   - `GET /v2/remotes?projectId=&sessionId=&host=&jobIds=` → 作业列表（状态/时长/退出码/日志路径）+ 已授权主机 + 已注册主机摘要 + 与运行的关联汇总 + 状态标签表；支持按主机/作业号过滤（汇总仍基于全量，避免误报"未关联"）。
@@ -17,7 +17,7 @@
 - **流程**：systemPrompt 第 5 条补充"窗口远程作业区直接读账本 + 同步按钮会唤醒 remote_status → dcs_run_update，因此 job_ids/host 必须写准"。
 - **测试**：新增 6 条 `remote-jobs/*` 单元用例（状态映射、归一与时长、缺失/损坏安全、根探测、索引与汇总、时长格式化）+ `http/remotes-route-reads-ssh-ledger`（**真实调用路由 handler**：读账本、主机筛选、总览聚合、sync 唤醒、缺参数 400）+ 2 条客户端渲染用例（远程作业卡片、RunItem 关联作业与时长）——共 208/208 通过。
 
-## [2.18.0] - 2026-09-16
+## [2.17.4] - 2026-09-16
 
 ### 新增：「项目管理」窗口兼容本地与 SSH 执行（executor 执行后端标注）
 
