@@ -58,13 +58,25 @@ jobs:
           node -e "import('@deepseek-ai/dsh-tools').then((m) => console.log('dsh-tools 可导入，defineTool:', typeof m.defineTool))"
 
       # 退出码语义：0=全通过 / 1=有用例失败 / 2=环境配置错误
+      # 早期分支（如 v2.17.3）尚无 test/compat 套件：跳过而不是让 CI 恒红，
+      # 待兼容性测试模块合并后本步骤自动生效。
       - name: 运行兼容性测试
-        run: npm test
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+            npm test
+          else
+            echo "::notice::本分支尚未包含 test/compat 套件，跳过兼容性测试"
+          fi
 
       # 失败时也上传报告，便于对比哪一层红了
       - name: 生成 JSON 报告
         if: always()
-        run: npm test -- --json > compat-report.json || true
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+            npm test -- --json > compat-report.json || true
+          else
+            echo '{"skipped":true,"reason":"this branch has no test/compat suite yet"}' > compat-report.json
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
