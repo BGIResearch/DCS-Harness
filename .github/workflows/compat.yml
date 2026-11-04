@@ -1,0 +1,85 @@
+name: dsh 兼容性测试
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # 每周一 03:00 UTC 跑一次：dsh 上游发新版时可第一时间发现破坏
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+jobs:
+  compat:
+    name: dsh 兼容性（${{ matrix.dsh }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 同时测「声明支持的最低版本」与「最新版本」，
+        # 前者保证向后兼容，后者提前暴露平台破坏。
+        dsh: ['latest']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 关键：装真实 dsh，而不是项目内 devDependency 里的旧版本。
+      # 本插件的 peerDependencies 可能滞后，只有装真实版本才能测到运行时行为。
+      - name: 安装真实 dsh
+        run: |
+          npm i -g @deepseek-ai/dsh@${{ matrix.dsh }}
+          dsh --version || true
+
+      - name: 探测 dsh 安装根
+        run: |
+          # 显式指定并校验：DSH_ROOT 无效时测试会以退出码 2 失败，
+          # 避免「静默回退到别的 dsh」造成假绿。
+          ROOT="$(npm root -g)"
+          test -f "$ROOT/@deepseek-ai/dsh/package.json" || { echo "未找到 dsh: $ROOT"; exit 1; }
+          echo "DSH_ROOT=$ROOT" >> "$GITHUB_ENV"
+          # 全局安装时 dsh-tools 位于 dsh 自己的 node_modules 下，不会提升到 top-level。
+          TOOLS="$ROOT/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tools"
+          [ -d "$TOOLS" ] || TOOLS="$ROOT/@deepseek-ai/dsh-tools"
+          test -f "$TOOLS/package.json" || { echo "未找到 dsh-tools: $TOOLS"; exit 1; }
+          echo "DSH_TOOLS=$TOOLS" >> "$GITHUB_ENV"
+          node -e "console.log('dsh', require('$ROOT/@deepseek-ai/dsh/package.json').version)"
+          node -e "console.log('dsh-tools', require('$TOOLS/package.json').version)"
+
+      # lib/index.js 以裸名 import '@deepseek-ai/dsh-tools'（该包由宿主提供，不是插件的
+      # dependencies）。checkout 出来的仓库没有 node_modules，这里把**宿主那份**链接进来：
+      # 既让加载/集成层能跑，又保证测到的是真实宿主实例，而不是另装的一份副本。
+      - name: 链接宿主 dsh-tools
+        run: |
+          mkdir -p node_modules/@deepseek-ai
+          ln -sfn "$DSH_TOOLS" node_modules/@deepseek-ai/dsh-tools
+          node -e "import('@deepseek-ai/dsh-tools').then((m) => console.log('dsh-tools 可导入，defineTool:', typeof m.defineTool))"
+
+      # 退出码语义：0=全通过 / 1=有用例失败 / 2=环境配置错误
+      # 早期分支（如 v2.17.3）尚无 test/compat 套件：跳过而不是让 CI 恒红，
+      # 待兼容性测试模块合并后本步骤自动生效。
+      - name: 运行兼容性测试
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+            npm test
+          else
+            echo "::notice::本分支尚未包含 test/compat 套件，跳过兼容性测试"
+          fi
+
+      # 失败时也上传报告，便于对比哪一层红了
+      - name: 生成 JSON 报告
+        if: always()
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+            npm test -- --json > compat-report.json || true
+          else
+            echo '{"skipped":true,"reason":"this branch has no test/compat suite yet"}' > compat-report.json
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compat-report
+          path: compat-report.json

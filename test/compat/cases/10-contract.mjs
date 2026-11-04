@@ -1,0 +1,369 @@
+// 契约层用例：校验 dsh 平台对外契约（defineTool / schema DSL / 服务注入 / 客户端 slot）
+// 与本插件的用法是否匹配。这是「版本升级后快速匹配」的核心——升级只需重跑本文件。
+
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  test, assert, assertEqual, assertIncludes, ROOT,
+  findDshRoot, dshModulesDir, pkgJson, importDsh,
+} from '../lib/harness.mjs';
+
+const DSH_ROOT = findDshRoot();
+const MODS = dshModulesDir(DSH_ROOT);
+
+/**
+ * 极简 semver 范围判定（零依赖）：支持 `>=a <b` 组合与 `^a.b.c`。
+ * 只比较主次修订三段数字、**忽略预发布段** —— 与 dsh 0.2.x 平台预检
+ * (`semver.satisfies(..., { includePrerelease: true })`) 的口径一致：
+ * 对 0.2.1-rc.5 这类预发布版，平台按 0.2.1 判断是否在范围内。
+ * 不足：不支持 `~` / `||` / `x` 通配；本仓库的声明用不到，出现时请补。
+ */
+function satisfiesRange(version, range) {
+  const core = (s) => String(s).trim().replace(/^[\^~<>=]+/, '').split('-')[0]
+    .split('.').map((x) => parseInt(x, 10) || 0);
+  const cmp = (a, b) => {
+    for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i];
+    return 0;
+  };
+  const v = core(version);
+  for (const part of String(range).trim().split(/\s+/).filter(Boolean)) {
+    const bound = core(part);
+    if (part.startsWith('^')) {
+      const hi = bound[0] > 0 ? [bound[0] + 1, 0, 0] : [0, bound[1] + 1, 0];
+      if (cmp(v, bound) < 0 || cmp(v, hi) >= 0) return false;
+    } else if (part.startsWith('>=')) {
+      if (cmp(v, bound) < 0) return false;
+    } else if (part.startsWith('<=')) {
+      if (cmp(v, bound) > 0) return false;
+    } else if (part.startsWith('<')) {
+      if (cmp(v, bound) >= 0) return false;
+    } else if (part.startsWith('>')) {
+      if (cmp(v, bound) <= 0) return false;
+    } else if (part && cmp(v, bound) !== 0) {
+      return false; // 裸版本号 = 精确匹配
+    }
+  }
+  return true;
+}
+
+/**
+ * 解析 @deepseek-ai/<pkg> 的 package.json（在 modules dir 与顶层 root 两处查找）。
+ * 未找到时抛错并**列出尝试过的路径** —— 与 importDsh 一致：
+ * 静默返回 null 会让下游报出误导性的「缺字段」而非「包不存在」。
+ */
+function dshPkgOf(pkg) {
+  const cands = [join(MODS, '@deepseek-ai', pkg), join(DSH_ROOT, '@deepseek-ai', pkg)];
+  const tried = [];
+  for (const c of cands) {
+    const f = join(c, 'package.json');
+    tried.push(f);
+    if (existsSync(f)) {
+      const j = pkgJson(c);
+      if (j && typeof j === 'object') return j;
+      throw new Error(`无法解析 ${f}（JSON 损坏？）`);
+    }
+  }
+  throw new Error(`未找到 @deepseek-ai/${pkg}；查找过:\n  ${tried.join('\n  ')}`);
+}
+
+/** 解析 @deepseek-ai/<pkg> 的目录（用于存在性检查）。 */
+function dshDirOf(pkg) {
+  const cands = [join(MODS, '@deepseek-ai', pkg), join(DSH_ROOT, '@deepseek-ai', pkg)];
+  for (const c of cands) if (existsSync(c)) return c;
+  return null;
+}
+// 显式校验而非静默退化：pkgJson 对「文件缺失」与「JSON 损坏」都返回 null，
+// `|| {}` 会让下游断言以误导性的方式失败（如「缺 dsh.compat」而非「package.json 坏了」）。
+const PLUGIN_PKG = (() => {
+  const p = pkgJson(ROOT);
+  if (!p || typeof p !== 'object' || !p.name) {
+    throw new Error(
+      `无法解析 ${join(ROOT, 'package.json')}（文件缺失或 JSON 损坏）—— `
+      + `后续契约用例将全部失去依据，请先修复 package.json`);
+  }
+  return p;
+})();
+
+function requireDshRoot() {
+  assert(DSH_ROOT, '未找到 dsh 安装目录；请设置 DSH_ROOT 或把 dsh 放到 PATH');
+  return DSH_ROOT;
+}
+
+// ---------------------------------------------------------------- 平台版本
+
+test('contract', 'platform/dsh-version', 'dsh 平台版本可识别且不低于最低支持版本', async () => {
+  const root = requireDshRoot();
+  const dshPkg = dshPkgOf('dsh');
+  assert(dshPkg, '未找到 @deepseek-ai/dsh/package.json');
+  const v = String(dshPkg.version || '');
+  assert(/^\d+\.\d+\.\d+/.test(v), `dsh 版本号格式异常: ${v}`);
+  const [maj, min] = v.split('.').map(Number);
+  assert(maj > 0 || min >= 1, `dsh 版本过低: ${v}（插件要求 >= 0.1.x）`);
+  // 记录到断言 detail，便于报告展示
+  assertEqual(typeof v, 'string', '版本可读');
+});
+
+test('contract', 'platform/dsh-tools-version', 'dsh-tools 版本与插件 peerDependencies 兼容', async () => {
+  const root = requireDshRoot();
+  const toolsPkg = dshPkgOf('dsh-tools');
+  assert(toolsPkg, '未找到 @deepseek-ai/dsh-tools/package.json');
+  const v = String(toolsPkg.version || '');
+  const peer = (PLUGIN_PKG.peerDependencies || {})['@deepseek-ai/dsh-tools'] || '';
+  assert(v, 'dsh-tools 版本缺失');
+  // peer 既可能是 ^0.1.1-rc.2，也可能是 ">=0.1.1-rc.2 <0.3.0" 这类区间：
+  // 用与平台预检同口径的判定，避免「声明已放宽、测试还按老规则误报」。
+  assert(peer, 'peerDependencies 应声明 @deepseek-ai/dsh-tools 的兼容范围');
+  assert(
+    satisfiesRange(v, peer),
+    `dsh-tools 实际 ${v} 不在 peerDependencies 声明的 ${peer} 范围内——升级 peerDependencies 或适配 API`,
+  );
+});
+
+// ---------------------------------------------------------------- defineTool
+
+test('contract', 'defineTool/exported', 'dsh-tools 仍然导出 defineTool', async () => {
+  const m = await importDsh('@deepseek-ai/dsh-tools', requireDshRoot());
+  assertEqual(typeof m.defineTool, 'function', 'defineTool 必须是函数');
+});
+
+test('contract', 'defineTool/parameter-spec', 'defineTool 接受插件使用的全部参数类型规格', async () => {
+  const root = requireDshRoot();
+  const { parameterSchemaSpecToJsonSchema } = await importDsh('@deepseek-ai/dsh-tools', root);
+  // 插件 lib/index.js 实际用到的参数类型集合
+  const spec = {
+    aString: { type: 'string', description: 's' },
+    aEnum: { type: 'string', enum: ['x', 'y'], description: 'e' },
+    aNum: { type: 'number', description: 'n' },
+    aBool: { type: 'boolean', description: 'b' },
+    aArr: { type: 'array', items: { type: 'string' }, description: 'A' },
+    aObj: { type: 'object', additionalProperties: true, description: 'O' },
+    aJson: { type: 'json', description: 'J' },
+    req: { type: 'string', required: true, description: 'R' },
+  };
+  const out = parameterSchemaSpecToJsonSchema(spec);
+  assertEqual(out.type, 'object', '参数根应为 object');
+  assertEqual(out.required && out.required[0], 'req', 'required: true 应映射到 required 列表');
+  assert(out.properties && Object.keys(out.properties).length === 8, '全部 8 个参数应被保留');
+});
+
+test('contract', 'defineTool/output-spec', 'defineTool 接受 output.schema 值规格（含 required/嵌套/数组）', async () => {
+  const root = requireDshRoot();
+  const { valueSchemaSpecToJsonSchema } = await importDsh('@deepseek-ai/dsh-tools', root);
+  const out = valueSchemaSpecToJsonSchema({
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      ok: { type: 'boolean', required: true },
+      rows: {
+        type: 'array',
+        items: { type: 'object', additionalProperties: false, properties: { n: { type: 'string' } } },
+      },
+      nested: { type: 'object', additionalProperties: true, properties: { x: { type: 'number' } } },
+    },
+  });
+  assertEqual(out.additionalProperties, false, 'additionalProperties 应被保留');
+  assert(out.required && out.required.includes('ok'), '嵌套对象的 required 应被上提');
+});
+
+test('contract', 'defineTool/minimal-registration', '最小 defineTool 注册可被工具注册表接受', async () => {
+  const root = requireDshRoot();
+  const { defineTool } = await importDsh('@deepseek-ai/dsh-tools', root);
+  const def = defineTool({
+    name: 'compat_probe',
+    description: 'probe',
+    parameters: { x: { type: 'string' } },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { echo: { type: 'string' } } },
+      render: (args, v) => [{ type: 'text', text: String(v && v.echo) }],
+    },
+    async execute(args) {
+      return { echo: String(args.x || '') };
+    },
+  });
+  assert(def && typeof def === 'object', 'defineTool 应返回工具定义对象');
+  assertEqual(def.name, 'compat_probe', '工具名应被保留');
+  assert(typeof def.execute === 'function', '应暴露 execute');
+  assert(def.parameters && def.parameters.type === 'object', '应暴露编译后的 parameters JSON Schema');
+  assert(def.output && typeof def.output.render === 'function', '应暴露 output.render');
+});
+
+test('contract', 'defineTool/execute-validates-args', 'defineTool 的 execute 会对参数做严格校验', async () => {
+  const root = requireDshRoot();
+  const { defineTool } = await importDsh('@deepseek-ai/dsh-tools', root);
+  const def = defineTool({
+    name: 'compat_strict',
+    description: 'strict',
+    parameters: { n: { type: 'number', required: true } },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' } } },
+      render: () => [{ type: 'text', text: 'x' }],
+    },
+    async execute() { return { ok: true }; },
+  });
+  // 缺必填 / 类型错，都应抛错而不是静默通过
+  let threw = false;
+  try {
+    await def.execute({ n: 'not-a-number' }, {});
+  } catch {
+    threw = true;
+  }
+  assert(threw, '类型错误的参数应被 execute 拒绝（否则插件会拿到脏输入）');
+});
+
+// ---------------------------------------------------------------- 插件契约
+
+test('contract', 'plugin/host-exports', '宿主入口导出 name / inject / apply', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  assertEqual(mod.name, 'dsh-dcs-cloud', '插件名必须与 cordis.patch.yml 的 id 一致');
+  assert(Array.isArray(mod.inject), 'inject 必须是数组');
+  assertEqual(typeof mod.apply, 'function', 'apply 必须是函数');
+});
+
+test('contract', 'plugin/host-inject-services', '宿主 inject 声明的服务在 dsh 平台均存在', async () => {
+  const root = requireDshRoot();
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  // 服务名 -> 提供该服务的 dsh 包（用于静态存在性校验）
+  const SERVICE_PROVIDERS = {
+    tools: 'dsh-tools',
+    systemPrompt: 'dsh-system-prompt',
+    webServer: 'dsh-host-webserver',
+    sessions: 'dsh-session',
+    tokenMeter: 'dsh-token-meter',
+    sessionPersistence: 'dsh-session-persistence',
+  };
+  assert(mod.inject.length > 0, 'inject 为空（用例将空转）');
+  const missing = [];
+  for (const svc of mod.inject) {
+    const provider = SERVICE_PROVIDERS[svc];
+    if (!provider) continue; // 未登记的第三方服务，跳过
+    if (!dshDirOf(provider)) missing.push(`${svc} (${provider})`);
+  }
+  assertEqual(missing.length, 0, `inject 的服务提供方缺失: ${missing.join(', ')}`);
+});
+
+test('contract', 'plugin/compat-declaration-matches-runtime', 'dsh.compat 声明的已测版本与运行时一致', async () => {
+  const compat = PLUGIN_PKG.dsh && PLUGIN_PKG.dsh.compat;
+  assert(compat, 'package.json 应声明 dsh.compat（记录已测的 dsh 版本）');
+  assert(compat.tested, 'dsh.compat.tested 必需');
+
+  const root = requireDshRoot();
+  const runtime = pkgJson(join(join(root, '@deepseek-ai', 'dsh'), ''));
+  const actual = runtime && runtime.version;
+
+  // 不强制相等（rc 迭代快），但必须显著：运行时比声明的新时给出提示，
+  // 因为「声明已测的版本」是给用户与 CI 做兼容判断的依据。
+  assert(actual, '应能读到运行中的 dsh 版本');
+  const norm = (v) => String(v).replace(/-.*$/, '');
+  const [amaj, amin] = norm(actual).split('.').map(Number);
+  const [tmaj, tmin] = norm(compat.tested).split('.').map(Number);
+  assert(amaj === tmaj,
+    `运行时 dsh 主版本 ${actual} 与已测声明 ${compat.tested} 主版本不一致，请重跑兼容性测试并更新声明`);
+
+  // verified 列表（0.1.6 起）：已被矩阵实测通过的版本集合。运行时若在其中，
+  // 说明当前 dsh **确经实测**，不是「猜的兼容」——这是给用户最直接的信心来源。
+  if (Array.isArray(compat.verified)) {
+    assert(compat.verified.length > 0, 'dsh.compat.verified 若声明则不得为空');
+    assert(compat.verified.includes(compat.tested),
+      `dsh.compat.verified 应包含 tested（${compat.tested}），实际: ${compat.verified.join(', ')}`);
+    // verified 里的每个版本都必须是合法 semver-ish 串
+    for (const v of compat.verified) {
+      assert(/^\d+\.\d+\.\d+/.test(String(v)), `verified 条目不是合法版本号: ${v}`);
+    }
+    if (compat.verified.includes(actual)) {
+      process.stderr.write(`  [兼容] 运行时 dsh=${actual} 在已实测清单内（${compat.verified.length} 个版本已通过）\n`);
+    }
+  }
+
+  // 次版本不一致时给出明确提示（不失败，但写入 detail 便于报告）
+  if (amin !== tmin) {
+    process.stderr.write(
+      `  [提示] 运行时 dsh=${actual} 与 dsh.compat.tested=${compat.tested} 次版本不同，建议更新声明\n`);
+  }
+});
+
+test('contract', 'plugin/cordis-patch-id', 'cordis.patch.yml 的 id 与插件 name 一致', async () => {
+  const patch = readFileSync(join(ROOT, 'cordis.patch.yml'), 'utf8');
+  assertIncludes(patch, 'dsh-dcs-cloud', 'patch 文件应引用插件 id');
+  const ids = [...patch.matchAll(/id:\s*([\w-]+)/g)].map((m) => m[1]);
+  assert(ids.length > 0, 'patch 文件应至少有一个 id');
+  for (const id of ids) assertEqual(id, 'dsh-dcs-cloud', `patch id 不一致: ${id}`);
+});
+
+test('contract', 'plugin/package-manifest', 'package.json 的 dsh 字段与导出声明完整', async () => {
+  assert(PLUGIN_PKG.dsh, 'package.json 缺少 dsh 字段');
+  assert(PLUGIN_PKG.dsh.bundle && PLUGIN_PKG.dsh.bundle.patch, 'dsh.bundle.patch 缺失');
+  assert(PLUGIN_PKG.dsh.client, 'dsh.client 缺失（客户端半无法被发现）');
+  assert(Array.isArray(PLUGIN_PKG.dsh.client.inject), 'dsh.client.inject 应为数组');
+  assert(PLUGIN_PKG.dsh.client.inject.length > 0, 'dsh.client.inject 不应为空（客户端装载顺序无保障）');
+  for (const dep of PLUGIN_PKG.dsh.client.inject) {
+    assert(dep.startsWith('@deepseek-ai/'), `dsh.client.inject 应为 dsh 包名: ${dep}`);
+  }
+  assert(PLUGIN_PKG.exports && PLUGIN_PKG.exports['.'], 'exports["."] 缺失');
+  assert(PLUGIN_PKG.exports['./client'], 'exports["./client"] 缺失');
+});
+
+// ---------------------------------------------------------------- 客户端契约
+
+test('contract', 'client/module-loader-envelope', '客户端半使用 window.__ModuleLoader__.load 包裹且 id 正确', async () => {
+  const src = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8');
+  assertIncludes(src, 'window.__ModuleLoader__.load', '客户端半应使用 __ModuleLoader__.load 信封');
+  const m = src.match(/load\(\{\s*id:\s*["']([\w-]+)["']/);
+  assert(m, '未能解析 __ModuleLoader__.load 的 id');
+  assertEqual(m[1], 'dsh-dcs-cloud', '__ModuleLoader__.load 的 id 必须与插件名一致');
+});
+
+test('contract', 'client/slots-exist', '客户端使用的 slot 在 dsh 客户端均存在', async () => {
+  const root = requireDshRoot();
+  const src = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8');
+  const used = [...src.matchAll(/slots\.(?:inject|register)\(\s*["']([\w.]+)["']/g)].map((m) => m[1]);
+  const unique = [...new Set(used)];
+  assert(unique.length > 0, '未在客户端代码中找到 slot 使用');
+  const missing = [];
+  for (const slot of unique) {
+    // 在 dsh 客户端包中检索该 slot 名的注册/渲染点
+    const found = searchInDsh(root, slot);
+    if (!found) missing.push(slot);
+  }
+  assertEqual(missing.length, 0, `以下 slot 在 dsh ${DSH_VERSION_LABEL(root)} 中不存在: ${missing.join(', ')}`);
+});
+
+function searchInDsh(root, needle) {
+  // 只在 client-ui-* / client-* 包中搜索，避免全量扫描
+  const base = join(dshModulesDir(root), '@deepseek-ai');
+  if (!existsSync(base)) return false;
+  const dirs = readdirSync(base).filter((d) => d.startsWith('dsh-client'));
+  for (const d of dirs) {
+    const libDir = join(base, d, 'lib');
+    if (!existsSync(libDir)) continue;
+    for (const f of readdirSync(libDir)) {
+      if (!f.endsWith('.js')) continue;
+      const txt = readFileSync(join(libDir, f), 'utf8');
+      if (txt.includes(`"${needle}"`) || txt.includes(`'${needle}'`)) return true;
+    }
+  }
+  return false;
+}
+
+function DSH_VERSION_LABEL(root) {
+  try {
+    return dshPkgOf('dsh').version;
+  } catch {
+    return '(未知版本)';
+  }
+}
+
+test('contract', 'client/exports-apply-inject', '客户端半导出 apply 且声明 slots 注入', async () => {
+  const src = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8');
+  assertIncludes(src, 'apply', '客户端半应导出 apply');
+  assertIncludes(src, 'inject: ["slots"]', '客户端半应声明 inject slots');
+});
+
+// ---------------------------------------------------------------- 会话格式
+
+test('contract', 'session/format-migrators-present', 'dsh 提供会话格式迁移链（升级不会丢历史会话）', async () => {
+  const root = requireDshRoot();
+  const base = join(dshModulesDir(root), '@deepseek-ai');
+  const migrators = readdirSync(base)
+    .filter((d) => d.startsWith('dsh-session-format') && /v\d+-to-v\d+/.test(d));
+  assert(migrators.length > 0, '未发现任何 session-format 迁移包');
+});

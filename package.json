@@ -1,6 +1,6 @@
 {
   "name": "dsh-dcs-cloud",
-  "version": "2.17.3",
+  "version": "2.17.5",
   "description": "DeepSeek Harness 插件：接入 BGI Research 的 dcs CLI，面向 DCS Cloud 的基因组/时空组学生信研究编排 —— 数据检索、Genpilot 流程复用、DCS 原生 skill/专家、在线容器、离线任务投递、脚本审计与学术报告生成。",
   "keywords": [
     "deepseek",
@@ -41,26 +41,61 @@
   },
   "homepage": "https://github.com/BGIResearch/DCS-Harness#readme",
   "scripts": {
-    "check": "node scripts/check-hooks.cjs",
-    "precommit": "npm run check"
+    "check": "node scripts/check-hooks.cjs && node scripts/check-version.mjs",
+    "check:version": "node scripts/check-version.mjs",
+    "precommit": "npm run check",
+    "test": "node test/compat/run.mjs",
+    "test:compat": "node test/compat/run.mjs",
+    "test:compat:json": "node test/compat/run.mjs --json",
+    "test:unit": "node test/compat/run.mjs -l unit",
+    "test:contract": "node test/compat/run.mjs -l contract",
+    "test:integration": "node test/compat/run.mjs -l integration",
+    "test:lifecycle": "node test/compat/run.mjs -l lifecycle",
+    "test:upgrade": "node test/compat/run.mjs -l upgrade",
+    "test:frozen": "node test/compat/run.mjs -l frozen",
+    "test:meta": "node test/compat/run.mjs -l meta",
+    "test:matrix": "bash test/compat/matrix.sh",
+    "test:e2e": "DCS_E2E=1 node test/compat/run.mjs -l e2e",
+    "test:client": "node test/compat/run.mjs -l client-render",
+    "test:http": "node test/compat/run.mjs -l http",
+    "test:consistency": "node test/compat/run.mjs -l consistency",
+    "test:embedded": "node test/compat/run.mjs -l embedded",
+    "test:fast": "DSH_FAST=1 node test/compat/run.mjs"
   },
   "dependencies": {},
   "dsh": {
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-runtime"
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings-general",
+        "@deepseek-ai/dsh-client-ui-sidebar"
       ],
       "platform": "web"
     },
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "compat": {
+      "tested": "0.2.1-rc.5",
+      "testedTools": "0.2.1-rc.5",
+      "min": "0.1.1-rc.2",
+      "verified": [
+        "0.2.1-rc.5",
+        "0.2.1-rc.4",
+        "0.2.1-rc.2",
+        "0.2.0-rc.2",
+        "0.1.6-alpha.1"
+      ],
+      "note": "权威声明是 engines.dsh / peerDependencies 的范围；0.2.x 平台会在导入插件前做清单预检，范围写窄会被静默跳过。运行 node test/compat/run.mjs 校验当前 dsh 是否仍兼容；bash test/compat/matrix.sh 跑多版本矩阵"
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-tools": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": ">=0.1.1-rc.2 <0.3.0",
     "react": "^18.2.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.0.0",
+    "dsh": ">=0.1.1-rc.2 <0.3.0"
   }
 }

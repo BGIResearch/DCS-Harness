@@ -1,0 +1,807 @@
+// 集成层用例：把插件真正装载进一个模拟 dsh 宿主上下文，验证
+//   - apply() 可执行、不抛错
+//   - 全部工具成功注册（名称唯一、schema 合法）
+//   - 每个工具的 output 渲染函数对典型值可用
+//   - 客户端半在模拟 __ModuleLoader__ 环境下可装载
+//
+// 这一层是「升级后第一时间发现问题」的主力：平台 API 一变，这里立刻红。
+
+import { readFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test, assert, assertEqual, assertIncludes, ROOT, findDshRoot, dshModulesDir } from '../lib/harness.mjs';
+
+// ---------------------------------------------------------------- 模拟宿主
+
+/** 构造一个最小可用的 dsh 宿主 ctx，记录所有注册行为。 */
+function makeHostCtx() {
+  const state = { tools: [], warnings: [], disposed: false };
+  const registered = new Map();
+
+  const tools = {
+    register(def) {
+      if (!def || typeof def !== 'object') throw new Error('tools.register 收到了非法定义');
+      if (!def.name) throw new Error('tools.register 收到无 name 的定义');
+      if (registered.has(def.name)) throw new Error(`工具名重复注册: ${def.name}`);
+      if (!def.parameters || def.parameters.type !== 'object') {
+        throw new Error(`工具 ${def.name} 的 parameters 不是合法 JSON Schema`);
+      }
+      if (!def.output || typeof def.output.render !== 'function') {
+        throw new Error(`工具 ${def.name} 缺少 output.render`);
+      }
+      if (typeof def.execute !== 'function') {
+        throw new Error(`工具 ${def.name} 缺少 execute`);
+      }
+      registered.set(def.name, def);
+      state.tools.push(def);
+      return () => { registered.delete(def.name); state.tools = state.tools.filter((t) => t.name !== def.name); };
+    },
+  };
+
+  const services = {
+    tools,
+    systemPrompt: {
+      sections: [],
+      // 0.1.5 契约：section({ name, order, text: () => string }) => disposer
+      section(descriptor) {
+        if (!descriptor || typeof descriptor !== 'object') {
+          throw new Error('systemPrompt.section 需要描述对象');
+        }
+        if (!descriptor.name) throw new Error('systemPrompt.section 缺少 name');
+        if (typeof descriptor.text !== 'function') {
+          throw new Error(`systemPrompt.section(${descriptor.name}) 的 text 必须是函数`);
+        }
+        let body;
+        try {
+          body = descriptor.text();
+        } catch (e) {
+          throw new Error(`systemPrompt.section(${descriptor.name}).text() 抛错: ${e.message}`);
+        }
+        if (typeof body !== 'string') {
+          throw new Error(`systemPrompt.section(${descriptor.name}).text() 未返回字符串`);
+        }
+        this.sections.push({ ...descriptor, body });
+        return () => {};
+      },
+    },
+    webServer: {
+      routes: [],
+      // 0.1.5 契约：register({ kind, path, handler }) => disposer
+      register(route) {
+        if (!route || typeof route !== 'object') throw new Error('webServer.register 需要 WebRoute 对象');
+        if (!route.kind || !route.path || typeof route.handler !== 'function') {
+          throw new Error(`WebRoute 不完整: ${JSON.stringify(Object.keys(route || {}))}`);
+        }
+        if (!['exact', 'prefix'].includes(route.kind)) {
+          throw new Error(`WebRoute.kind 非法: ${route.kind}（应为 exact | prefix）`);
+        }
+        if (route.path.endsWith('/')) throw new Error(`WebRoute.path 不应有尾斜杠: ${route.path}`);
+        if (this.routes.some((r) => r.kind === route.kind && r.path === route.path)) {
+          throw new Error(`WebRoute 重复注册: ${route.kind} ${route.path}`);
+        }
+        this.routes.push(route);
+        return () => { this.routes = this.routes.filter((r) => r !== route); };
+      },
+      registerUpgrade(route) {
+        if (!route || !route.path || typeof route.handler !== 'function') throw new Error('WebUpgradeRoute 不完整');
+        this.routes.push({ ...route, kind: 'upgrade' });
+        return () => {};
+      },
+      registerFallback(handler) {
+        if (typeof handler !== 'function') throw new Error('registerFallback 需要函数');
+        return () => {};
+      },
+      tapIndex(fn) {
+        if (typeof fn !== 'function') throw new Error('tapIndex 需要函数');
+        return () => {};
+      },
+    },
+    sessions: { get: () => null, list: () => [], create: () => null },
+    tokenMeter: { usage: () => ({ input: 0, output: 0 }) },
+    sessionPersistence: { list: async () => [], load: async () => null, save: async () => {} },
+  };
+
+  const ctx = {
+    ...services,
+    services: new Map(Object.entries(services)),
+    get(name) {
+      return this.services.get(name);
+    },
+    has(name) {
+      return this.services.has(name);
+    },
+    effect(fn) {
+      const dispose = typeof fn === 'function' ? fn() : undefined;
+      return typeof dispose === 'function' ? dispose : () => {};
+    },
+    on() { return () => {}; },
+    emit() {},
+    logger: { debug() {}, info() {}, warn(...a) { state.warnings.push(a.join(' ')); }, error() {} },
+    _state: state,
+  };
+  return { ctx, state };
+}
+
+// ---------------------------------------------------------------- 用例
+
+test('integration', 'load/apply-runs', '插件 apply(ctx) 可在模拟宿主中成功执行', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+  assert(state.tools.length > 0, 'apply 后应至少注册一个工具');
+});
+
+test('integration', 'load/tool-count', '注册的工具数量符合预期（>= 40，防止静默丢失）', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+  assert(state.tools.length >= 40, `工具数量异常：仅 ${state.tools.length} 个（预期 >= 40）`, {
+    count: state.tools.length,
+    names: state.tools.map((t) => t.name),
+  });
+});
+
+test('integration', 'load/tool-names-dcs-prefixed', '所有工具名均以 dcs_ 前缀且全局唯一', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+  const bad = state.tools.filter((t) => !t.name.startsWith('dcs_')).map((t) => t.name);
+  assertEqual(bad.length, 0, `以下工具名缺少 dcs_ 前缀: ${bad.join(', ')}`);
+  const names = state.tools.map((t) => t.name);
+  assertEqual(new Set(names).size, names.length, '工具名存在重复');
+});
+
+test('integration', 'load/schemas-compile', '每个工具的参数与输出 schema 均可通过平台校验', async () => {
+  const root = findDshRoot();
+  const mods = dshModulesDir(root);
+  const { assertSupportedJsonSchema } = await import(join(mods, '@deepseek-ai', 'dsh-tools', 'lib', 'index.js'));
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+  assert(state.tools.length > 0, '未注册任何工具（用例将空转）');
+  const failures = [];
+  for (const t of state.tools) {
+    try {
+      assertSupportedJsonSchema(t.parameters);
+      if (t.output && t.output.schema) assertSupportedJsonSchema(t.output.schema);
+    } catch (e) {
+      failures.push(`${t.name}: ${e.message}`);
+    }
+  }
+  assertEqual(failures.length, 0, `${failures.length} 个工具的 schema 不被平台接受`, failures);
+});
+
+test('integration', 'load/output-renderers-robust', '每个工具的 output.render 对最小合法值不抛错', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+  assert(state.tools.length > 0, '未注册任何工具（用例将空转）');
+  const failures = [];
+  for (const t of state.tools) {
+    try {
+      // 构造一个满足 required 的最小对象
+      const req = (t.output.schema && t.output.schema.required) || [];
+      const value = {};
+      for (const k of req) {
+        const prop = t.output.schema.properties[k] || {};
+        if (prop.type === 'boolean') value[k] = true;
+        else if (prop.type === 'number' || prop.type === 'integer') value[k] = 0;
+        else if (prop.type === 'array') value[k] = [];
+        else if (prop.type === 'object') value[k] = {};
+        else value[k] = 'x';
+      }
+      const blocks = t.output.render({}, value);
+      assert(Array.isArray(blocks), `${t.name}.render 应返回 ContentBlock[]`);
+      for (const b of blocks) {
+        assert(b && typeof b.type === 'string', `${t.name}.render 返回的块缺少 type`);
+      }
+    } catch (e) {
+      failures.push(`${t.name}: ${e.message}`);
+    }
+  }
+  assertEqual(failures.length, 0, `${failures.length} 个工具的 render 在最小值上崩溃`, failures);
+});
+
+test('integration', 'load/descriptions-present', '每个工具都有非空 description（模型可见）', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+  const missing = state.tools.filter((t) => !t.description || t.description.trim().length < 8).map((t) => t.name);
+  assertEqual(missing.length, 0, `以下工具缺少有效 description: ${missing.join(', ')}`);
+});
+
+test('integration', 'load/idempotent-second-apply', 'apply 重复执行不抛错（热重载场景）', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const first = makeHostCtx();
+  await mod.apply(first.ctx);
+  // 第二次用全新 ctx，模拟热重载
+  const second = makeHostCtx();
+  await mod.apply(second.ctx);
+  assertEqual(second.state.tools.length, first.state.tools.length, '两次装载的工具数量应一致');
+});
+
+test('integration', 'load/system-prompt-injected', '插件向 systemPrompt 注入了 DCS 工作流指导', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx } = makeHostCtx();
+  await mod.apply(ctx);
+  const sections = ctx.systemPrompt.sections;
+  assert(sections.length > 0, 'systemPrompt 未注入任何 section（DCS 流程引导会丢失）');
+  const all = sections.map((s) => s.body).join('\n');
+  assertIncludes(all, 'DCS', 'systemPrompt 内容中应包含 DCS 相关指导');
+  const dcsSection = sections.find((s) => s.name === 'dcs-cloud');
+  assert(dcsSection, '应注册名为 dcs-cloud 的 systemPrompt section');
+  assert(typeof dcsSection.order === 'number', 'section 应声明 order（决定注入顺序）');
+  assert(dcsSection.body.length > 500, `DCS 引导内容过短（${dcsSection.body.length} 字符），可能被截断`);
+});
+
+test('integration', 'load/web-routes-registered', '插件按 0.1.5 WebRoute 契约注册 HTTP 路由', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx } = makeHostCtx();
+  await mod.apply(ctx);
+  const routes = ctx.webServer.routes;
+  assert(routes.length > 0, '未注册任何 WebRoute（项目管理/结果交付的数据接口会失效）');
+  const paths = routes.map((r) => r.path);
+  assertIncludes(paths, '/api/dcs-cloud', '应注册 /api/dcs-cloud 前缀路由');
+  for (const r of routes) {
+    assert(['exact', 'prefix'].includes(r.kind), `路由 kind 非法: ${r.kind}`);
+    assert(r.path.startsWith('/'), `路由 path 应以 / 开头: ${r.path}`);
+    assert(!r.path.endsWith('/'), `路由 path 不应以 / 结尾: ${r.path}`);
+    assertEqual(typeof r.handler, 'function', `路由 ${r.path} 缺少 handler`);
+  }
+});
+
+test('integration', 'load/presenters-consistent', '呈现契约一致：terminal/diff 卡必须配对 presentResult', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+
+  // dsh 的 presentCall/presentResult 是「待执行卡 / 完成卡」一对。
+  // generic 卡省略 presentResult 会沿用待执行卡片标题（可接受）；
+  // 但 terminal/diff 卡若省略，完成后会用原始文本替换掉终端/差异卡片，
+  // 造成「执行中美观、完成后塌成纯文本」的体验断裂——故强制配对。
+  assert(state.tools.length > 0, '未注册任何工具（用例将空转）');
+  const CARD_REQUIRES_RESULT = new Set(['terminal', 'diff']);
+  const failures = [];
+  let withCall = 0;
+  let withResult = 0;
+
+  for (const t of state.tools) {
+    const hasCall = typeof t.presentCall === 'function';
+    const hasResult = typeof t.presentResult === 'function';
+    if (hasCall) withCall++;
+    if (hasResult) withResult++;
+    if (!hasCall) continue;
+
+    // 用最小合法参数调用 presentCall，忽略参数校验失败的场景
+    let view;
+    try {
+      view = t.presentCall(minimalArgs(t));
+    } catch {
+      continue;
+    }
+    if (!view || typeof view !== 'object') continue;
+    if (CARD_REQUIRES_RESULT.has(view.card) && !hasResult) {
+      failures.push(`${t.name}: presentCall 返回 card='${view.card}' 但缺少 presentResult`);
+    }
+    if (view.card !== undefined && !['generic', 'terminal', 'diff'].includes(view.card)) {
+      failures.push(`${t.name}: 未知 card 类型 '${view.card}'`);
+    }
+    if (view.card === 'generic' && (!view.title || String(view.title).trim() === '')) {
+      failures.push(`${t.name}: generic 卡缺少 title（卡片会显示为空标题）`);
+    }
+    if (view.card === 'terminal' && (!view.title || String(view.title).trim() === '')) {
+      failures.push(`${t.name}: terminal 卡缺少 title（应显示命令行）`);
+    }
+    if (view.kind !== undefined) {
+      const kinds = ['read', 'edit', 'delete', 'move', 'search', 'execute', 'fetch', 'other'];
+      if (!kinds.includes(view.kind)) failures.push(`${t.name}: 未知 kind '${view.kind}'`);
+    }
+  }
+
+  assert(withCall > 0, '应至少有一个工具声明 presentCall');
+  assertEqual(failures.length, 0, `呈现契约不一致（${failures.length} 处）`, failures);
+});
+
+test('integration', 'load/presenters-render-safe', 'presentResult 对成功/失败两种结果均不抛错', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+  const failures = [];
+  let checked = 0;
+
+  for (const t of state.tools) {
+    if (typeof t.presentResult !== 'function') continue;
+    checked++;
+    // 需覆盖两种态：正常结果与错误结果（presentResult 会看到 result.isError）
+    const samples = [
+      { content: [{ type: 'text', text: 'ok\n' }], isError: false },
+      { content: [{ type: 'text', text: 'boom' }], isError: true },
+      { content: [], isError: false },
+    ];
+    for (const result of samples) {
+      try {
+        const view = t.presentResult(minimalArgs(t), result);
+        if (view !== undefined) {
+          assert(view && typeof view === 'object', `${t.name}.presentResult 应返回对象或 undefined`);
+          assert(view.card, `${t.name}.presentResult 返回的对象缺少 card`);
+        }
+      } catch (e) {
+        failures.push(`${t.name} (isError=${result.isError}): ${e.message}`);
+      }
+    }
+  }
+  assert(checked > 0, '应至少有一个工具声明 presentResult');
+  assertEqual(failures.length, 0, `${failures.length} 处 presentResult 崩溃`, failures);
+});
+
+/** 依据工具的参数 schema 造一份「最小合法」参数。 */
+function minimalArgs(t) {
+  const schema = t.parameters || {};
+  const req = schema.required || [];
+  const args = {};
+  for (const k of Object.keys(schema.properties || {})) {
+    const p = schema.properties[k];
+    if (!req.includes(k)) continue;
+    if (p.type === 'boolean') args[k] = false;
+    else if (p.type === 'number' || p.type === 'integer') args[k] = 1;
+    else if (p.type === 'array') args[k] = [];
+    else if (p.type === 'object') args[k] = {};
+    else args[k] = 'x';
+  }
+  return args;
+}
+
+test('integration', 'load/presenters-soft-validate', 'presentCall/presentResult 对非法参数返回 undefined 而非抛错', async () => {
+  // dsh 契约：presenter 会先软校验参数，非法即返回 undefined（回退通用卡片），
+  // 由 defineTool 包一层实现。插件必须能容忍该行为（不得假设返回对象）。
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+
+  assert(state.tools.length > 0, '未注册任何工具（用例将空转）');
+  const problems = [];
+  for (const t of state.tools) {
+    if (typeof t.presentCall === 'function') {
+      // 非法参数（缺必填 / 类型错）不应抛错
+      try {
+        const v = t.presentCall({ __nonexistent__: 1 });
+        if (v !== undefined) {
+          assert(v && typeof v === 'object', `${t.name}.presentCall 应返回对象或 undefined`);
+        }
+      } catch (e) {
+        problems.push(`${t.name}.presentCall: ${e.message}`);
+      }
+    }
+    if (typeof t.presentResult === 'function') {
+      try {
+        const v = t.presentResult({ __nonexistent__: 1 }, { content: [], isError: false });
+        if (v !== undefined) {
+          assert(v && typeof v === 'object', `${t.name}.presentResult 应返回对象或 undefined`);
+        }
+      } catch (e) {
+        problems.push(`${t.name}.presentResult: ${e.message}`);
+      }
+    }
+  }
+  assertEqual(problems.length, 0, `${problems.length} 个 presenter 在非法参数上抛错`, problems);
+});
+
+test('integration', 'load/terminal-presenter-exit-code', '终端卡片从失败输出还原退出码徽章', async () => {
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+  const t = state.tools.find((x) => x.name === 'dcs_terminal_exec');
+  assert(t, '应注册 dcs_terminal_exec');
+  assert(t.output.schema.properties.exit_code,
+    'output schema 应声明 exit_code（否则结构化退出码会被 additionalProperties:false 拒绝）');
+
+  const view = (text) => t.presentResult(
+    { command: 'ls /nope' },
+    { content: [{ type: 'text', text }], isError: false },
+  );
+
+  // 非 0 退出码 → 应设置 exitCode（UI 显示失败徽章）
+  assertEqual(view('❌ 失败：x\nboom\n(exit_code=1)').exitCode, 1, 'exit_code=1 应被还原');
+  assertEqual(view('boom\n(exit_code=127)').exitCode, 127, 'exit_code=127 应被还原');
+
+  // 成功（无 exit_code 文本）与显式 0 → 不应设置，避免误导性成功徽章
+  assertEqual(view('🖥️ 在线执行：\nok\n').exitCode, undefined,
+    '无退出码信息时不应设置 exitCode');
+  assertEqual(view('ok\n(exit_code=0)').exitCode, undefined,
+    'exit_code=0 不应设置徽章（成功是默认态）');
+
+  // 卡片类型与输出仍保持终端卡片语义
+  const v = view('hello');
+  assertEqual(v.card, 'terminal', '应保持终端卡片');
+  assertEqual(v.title, 'ls /nope', '标题应为命令');
+  assertEqual(v.output, 'hello', '输出应原样透传');
+});
+
+test('integration', 'load/cli-view-fields-declared', '返回 cliView 结果的工具必须声明其全部字段', async () => {
+  // 教训：给 cliView 增加 exit_code 字段后，dcs_task_status 的 output schema
+  // 是 additionalProperties:false 且未声明 exit_code —— 平台会拒绝该结果。
+  // 这类「共享 helper 增字段、消费方 schema 未跟上」的问题极易漏掉，故设此守卫。
+  //
+  // 注意：必须扫**源码**而非 t.execute.toString() —— defineTool 会把用户 execute
+  // 包一层（return userExecute(args, exec)），包装后的函数体里看不到 cliView。
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(join(ROOT, 'lib', 'index.js'), 'utf8');
+
+  // 1) 解析 cliView 实际返回的字段名
+  const cliStart = src.indexOf('function cliView(');
+  assert(cliStart > 0, '应找到 cliView 定义');
+  const cliBody = src.slice(cliStart, src.indexOf('\n}', cliStart));
+  const retIdx = cliBody.lastIndexOf('return {');
+  assert(retIdx > 0, 'cliView 应有 return 对象');
+  const retBlock = cliBody.slice(retIdx);
+  // 同时支持 `key: value` 与 ES6 简写 `key,`
+  const cliFields = [...retBlock.matchAll(/^\s{4}([a-z_][\w]*)\s*(?::|,|$)/gm)].map((m) => m[1]);
+  assert(cliFields.length >= 4,
+    `未能解析 cliView 返回字段（应含 ok/error/output/truncated 等），实际: ${JSON.stringify(cliFields)}`);
+
+  // 2) 按工具切分源码，找出「直接把 cliView(...) 作为返回值」的工具
+  const blocks = src.split(/ctx\.tools\.register\(defineTool\(\{/).slice(1);
+  const problems = [];
+  let checked = 0;
+
+  for (const b of blocks) {
+    const nameM = b.match(/name:\s*'([^']+)'/);
+    if (!nameM) continue;
+    const name = nameM[1];
+    // 只关心「整个工具的输出就是 cliView 结果」的形态
+    if (!/return cliView\(/.test(b)) continue;
+    checked++;
+
+    const schM = b.match(/schema:\s*\{([\s\S]*?)\}\s*,\s*\n\s*render\(/);
+    if (!schM) continue;
+    const sch = schM[1];
+    if (!/additionalProperties:\s*false/.test(sch)) continue;
+
+    const missing = cliFields.filter((f) => !new RegExp(`\\b${f}\\s*:`).test(sch));
+    if (missing.length > 0) {
+      problems.push(`${name}: 返回 cliView 但 schema 未声明 ${missing.join(', ')}`
+        + `（additionalProperties:false 会拒绝该结果）`);
+    }
+  }
+
+  assert(checked > 0, '应至少找到一个直接返回 cliView 的工具（否则守卫失效）');
+  assertEqual(problems.length, 0, problems.join('; '));
+});
+
+test('integration', 'load/error-path-is-structured', '工具失败时返回结构化错误而非抛错', async () => {
+  // 负向用例（刻意不调成功路径）：本用例用会失败的输入调用 execute，
+  // 验证错误路径的结构化，因此不断言 res.ok === true，
+  // 而是断言「不抛错、且错误字段结构正确」。
+  //
+  // 设计约定：所有工具的 output schema 都声明了 error 字段，
+  // 失败时应返回 { ok:false, error:'...' } 而不是抛异常。
+  // 抛异常会让 agent 收到难以处理的堆栈，且丢失「哪个环节失败」的语义。
+  const mod = await import(join(ROOT, 'lib', 'index.js'));
+  const { ctx, state } = makeHostCtx();
+  await mod.apply(ctx);
+
+  // 先验证约定本身：每个工具都应声明 error 字段
+  const noErrorField = state.tools
+    .filter((t) => !(t.output.schema.properties || {}).error)
+    .map((t) => t.name);
+  assertEqual(noErrorField.length, 0,
+    `以下工具未声明 error 字段（失败时无处承载错误信息）: ${noErrorField.join(', ')}`);
+
+  // 再用「必然失败」的输入调用纯本地工具，确认不抛错且返回结构正确
+  const LOCAL_FAILING = [
+    ['dcs_audit_script', { text: 'rm -rf /', type: 'shell' }],
+    ['dcs_plan', { title: 'x' }],
+    ['dcs_atlas', { section: 'regions' }],
+  ];
+  const problems = [];
+  for (const [name, args] of LOCAL_FAILING) {
+    const t = state.tools.find((x) => x.name === name);
+    if (!t) continue;
+    let r;
+    try {
+      r = await t.execute(args, {
+        signal: undefined, sessionId: '', workspace: process.cwd(), arguments: {},
+      });
+    } catch (e) {
+      problems.push(`${name}: 抛错而非返回结构化错误 → ${e.message}`);
+      continue;
+    }
+    if (!r || typeof r !== 'object') { problems.push(`${name}: 未返回对象`); continue; }
+    if (typeof r.ok !== 'boolean') problems.push(`${name}: 缺少 ok 布尔字段`);
+    const errType = t.output.schema.properties.error.type;
+    if (errType === 'string' && r.error !== undefined && typeof r.error !== 'string') {
+      problems.push(`${name}: error 应为字符串，实际 ${typeof r.error}`);
+    }
+  }
+  assertEqual(problems.length, 0, problems.join('; '));
+});
+
+// ---------------------------------------------------------------- 客户端半
+
+test('integration', 'client/loads-in-moduleloader', '客户端半可在模拟 __ModuleLoader__ 环境中装载', async () => {
+  const src = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8');
+  const captured = [];
+  const React = { createElement: (...a) => ({ __el: a }), Component: class {}, Fragment: 'frag' };
+
+  // 模拟浏览器全局
+  const g = globalThis;
+  const prevWindow = g.window;
+  const prevDoc = g.document;
+  g.window = {
+    __ModuleLoader__: { load: (def) => captured.push(def) },
+    location: { search: '', href: '' },
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
+  g.document = {
+    getElementById: () => null,
+    createElement: () => ({ set textContent(v) {}, set id(v) {}, style: {}, appendChild() {} }),
+    head: { appendChild: () => {} },
+    body: { appendChild: () => {} },
+    addEventListener: () => {},
+  };
+  try {
+    Object.defineProperty(g, 'navigator', { value: { userAgent: 'node' }, configurable: true, writable: true });
+  } catch { /* 已有 navigator 则复用 */ }
+
+  try {
+    // 在隔离作用域里执行客户端源码
+    const fn = new Function('window', 'document', 'navigator', 'React', src);
+    fn(g.window, g.document, g.navigator, React);
+    assertEqual(captured.length, 1, '客户端半应调用 __ModuleLoader__.load 恰好一次');
+    const def = captured[0];
+    assertEqual(def.id, 'dsh-dcs-cloud', '模块 id 应为 dsh-dcs-cloud');
+    assertEqual(typeof def.factory, 'function', 'factory 必须是函数');
+
+    const requireStub = (name) => {
+      if (name === 'react') return React;
+      throw new Error(`未预期的依赖: ${name}`);
+    };
+    const exported = def.factory(requireStub);
+    assert(exported && typeof exported.apply === 'function', 'factory 应返回带 apply 的模块');
+    assert(Array.isArray(exported.inject), '模块应声明 inject');
+    assertIncludes(exported.inject, 'slots', '客户端应注入 slots');
+  } finally {
+    g.window = prevWindow;
+    g.document = prevDoc;
+  }
+});
+
+test('integration', 'client/apply-registers-slots', '客户端 apply 在真实 slots 契约下注册界面', async () => {
+  const src = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8');
+  const captured = [];
+  const g = globalThis;
+  const prevWindow = g.window;
+  const prevDoc = g.document;
+  g.window = { __ModuleLoader__: { load: (d) => captured.push(d) }, localStorage: { getItem: () => null, setItem: () => {} } };
+  g.document = { getElementById: () => null, createElement: () => ({ style: {}, set textContent(v) {} }), head: { appendChild: () => {} } };
+  const React = { createElement: (...a) => ({ __el: a }), Component: class {}, Fragment: 'frag' };
+
+  const registrations = [];
+  const injected = [];
+  const slots = {
+    inject(name, fn) { injected.push(name); return fn ? fn() : undefined; },
+    register(meta, comp) { registrations.push({ meta, comp }); return () => {}; },
+    entries: () => [],
+    subscribe: () => () => {},
+    getVersion: () => 0,
+  };
+
+  try {
+    const fn = new Function('window', 'document', 'React', src);
+    fn(g.window, g.document, React);
+    const mod = captured[0].factory((n) => {
+      if (n === 'react') return React;
+      throw new Error(`未预期的依赖: ${n}`);
+    });
+    mod.apply({ slots, effect: (f) => (typeof f === 'function' ? f() : undefined), get: () => undefined });
+    assert(injected.length > 0, '客户端应通过 slots.inject 挂载');
+    assert(registrations.length > 0, '客户端应注册至少一个界面');
+    const names = registrations.map((r) => r.meta && r.meta.name);
+    assertIncludes(names, 'conversation.view', '应注册会话视图（项目管理/结果交付）');
+    assertIncludes(names, 'settings.section', '应注册设置页');
+    for (const r of registrations) {
+      assert(r.meta && r.meta.id, `注册项缺少 id: ${JSON.stringify(r.meta)}`);
+      assert(r.comp, `注册项 ${r.meta.id} 缺少组件`);
+    }
+  } finally {
+    g.window = prevWindow;
+    g.document = prevDoc;
+  }
+});
+
+// ---------------------------------------------------------------- 远程作业路由（L2）
+
+/**
+ * 构造最小 req/res 以**真实调用**宿主前缀路由 handler（不是静态比对字符串）。
+ * 注意：readBody 在 handler 内部同步注册 data/end 监听，因此必须先调用 handler
+ * 拿到 promise，再等一个 tick 后 emit 请求体。
+ */
+function fakeReqRes(method, url, bodyObj) {
+  const res = {
+    status: 0, body: '', headers: null,
+    writeHead(s, h) { this.status = s; this.headers = h; },
+    end(b) { this.body = b || ''; },
+    setHeader() {}, on() {}, destroy() {},
+  };
+  const listeners = {};
+  const req = {
+    method, url, headers: {},
+    on(ev, fn) { (listeners[ev] = listeners[ev] || []).push(fn); return req; },
+    destroy() {},
+  };
+  const emit = async (handlerPromise) => {
+    await new Promise((r) => setImmediate(r));
+    if (bodyObj !== undefined) for (const f of (listeners.data || [])) f(Buffer.from(JSON.stringify(bodyObj)));
+    for (const f of (listeners.end || [])) f();
+    await handlerPromise;
+  };
+  return { req, res, emit, json: () => JSON.parse(res.body) };
+}
+
+test('integration', 'http/remotes-route-reads-ssh-ledger', 'GET /v2/remotes 真实读 SSH 作业账本并关联运行；POST /sync 唤醒 agent', async () => {
+  const prevHome = process.env.DSH_HOME;
+  const home = mkdtempSync(join(tmpdir(), 'remotes-home-'));
+  const root = mkdtempSync(join(tmpdir(), 'remotes-root-'));
+  process.env.DSH_HOME = home;
+  try {
+    // ① 造一个工作区根 + dsh-science 的作业账本（本插件只读它）
+    const ledgerDir = join(root, '.dsh', 'remotes');
+    mkdirSync(ledgerDir, { recursive: true });
+    writeFileSync(join(ledgerDir, 'jobs.json'), JSON.stringify({
+      schema: 1,
+      jobs: [
+        { id: 'J01', host: 'c4g-tun', title: 'fastp', state: 'running', mode: 'direct', pid: 4321, submittedAt: '2026-09-16T10:00:00.000Z', startedAt: '2026-09-16T10:00:05.000Z' },
+        { id: 'J02', host: 'hpc01', title: 'hisat2', state: 'succeeded', mode: 'slurm', submittedAt: '2026-09-16T09:00:00.000Z', startedAt: '2026-09-16T09:05:00.000Z', finishedAt: '2026-09-16T09:35:00.000Z', exitCode: 0 },
+      ],
+    }), 'utf8');
+    writeFileSync(join(ledgerDir, 'allowlist.json'), JSON.stringify({ schema: 1, hosts: [{ host: 'c4g-tun', grantedAt: '2026-09-16T08:00:00.000Z', grantedBy: 'user' }] }), 'utf8');
+
+    // ② 建项目（显式 workspace=root，路由据此定位账本）+ 一个 SSH 运行
+    const projects = await import(join(ROOT, 'lib', 'projects.js'));
+    await projects.upsertProject({ project_id: '__remote_ui__', title: '远程长任务', workspace: root }, 'sess-r');
+    const mres = await projects.upsertModule('__remote_ui__', { name: '比对' }, 'sess-r');
+    const mid = (mres.module || mres).id;
+    const rres = await projects.startRun('__remote_ui__', mid, {
+      executor: 'ssh', host: 'c4g-tun', job_ids: ['J01'], notes: '对话方案：remote_run 提交',
+    }, 'sess-r');
+    const runId = (rres.run || rres).id;
+
+    // ③ 装载插件，取出前缀路由 handler
+    const mod = await import(join(ROOT, 'lib', 'index.js'));
+    const { ctx } = makeHostCtx();
+    await mod.apply(ctx);
+    const route = ctx.webServer.routes.find((r) => r.kind === 'prefix' && r.path === '/api/dcs-cloud');
+    assert(route, '应注册 /api/dcs-cloud 前缀路由');
+    const call = async (method, path, body) => {
+      const f = fakeReqRes(method, path, body);
+      const p = route.handler(f.req, f.res);
+      await f.emit(p);
+      return f;
+    };
+
+    // ④ GET /v2/remotes：读到 2 条作业，工作区根解析正确，关联到运行
+    const r1 = await call('GET', '/api/dcs-cloud/v2/remotes?projectId=__remote_ui__&sessionId=sess-r');
+    assertEqual(r1.res.status, 200, `路由应 200，实际 ${r1.res.status}`);
+    const d1 = r1.json();
+    assertEqual(d1.ok, true, `远程作业路由应 ok: ${JSON.stringify(d1).slice(0, 300)}`);
+    assertEqual(d1.root, root, '工作区根应解析为项目记录的 workspace');
+    assertIncludes(d1.ledger, '.dsh/remotes/jobs.json', '应回传账本路径');
+    assertEqual(d1.jobs.length, 2, '应读到 2 条作业');
+    assertEqual(d1.missing, false, '账本存在时不应标记 missing');
+    assertEqual(d1.summary.total, 1, '汇总应关联到 1 个作业（J01→本次运行）');
+    assertEqual(d1.summary.byState.running, 1, '运行中作业计数应为 1');
+    assertEqual(d1.summary.unlinked, 1, 'J02 未关联运行应计入 unlinked');
+    assertEqual(d1.allowlist[0].host, 'c4g-tun', '应回传本项目已授权主机');
+    assert(Array.isArray(d1.registeredHosts), 'registeredHosts 应为数组');
+    assert(d1.stateLabels && d1.stateLabels.running, '应回传状态标签表（客户端渲染用）');
+
+    // ⑤ 主机筛选：只看 hpc01
+    const r2 = await call('GET', '/api/dcs-cloud/v2/remotes?projectId=__remote_ui__&sessionId=sess-r&host=hpc01');
+    const d2 = r2.json();
+    assertEqual(d2.jobs.length, 1, '按主机筛选应只剩 1 条');
+    assertEqual(d2.jobs[0].id, 'J02', '筛选结果应为 hpc01 上的 J02');
+
+    // ⑥ 项目总览：非 DCS 运行由远程作业补进同一口径（不查 dcs CLI）
+    const r3 = await call('GET', '/api/dcs-cloud/v2/project-overview?projectId=__remote_ui__&sessionId=sess-r');
+    const d3 = r3.json();
+    assertEqual(d3.ok, true, '总览路由应 ok');
+    assert(d3.remote, '总览应包含 remote 聚合');
+    assertEqual(d3.remote.total, 1, '总览 remote.total 应为 1');
+    assert(d3.sharded[runId], 'SSH 运行应出现在 sharded 聚合里');
+    assertEqual(d3.sharded[runId].executor, 'ssh', 'sharded 应标注执行为 ssh');
+    assertEqual(d3.sharded[runId].host, 'c4g-tun', 'sharded 应标注主机');
+    assertEqual(d3.taskSummary.total, 1, 'SSH 作业应计入 taskSummary.total');
+    assertEqual(d3.taskSummary.running, 1, 'SSH 作业状态应计入 taskSummary.running');
+
+    // ⑦ POST /v2/remotes/sync：唤醒 agent 去 remote_status（无 live agent 时 woken=false 但不报错）
+    const r4 = await call('POST', '/api/dcs-cloud/v2/remotes/sync', { projectId: '__remote_ui__', sessionId: 'sess-r' });
+    assertEqual(r4.res.status, 200, '同步路由应 200');
+    const d4 = r4.json();
+    assertEqual(d4.ok, true, `同步路由应 ok: ${JSON.stringify(d4)}`);
+    assertEqual(d4.runs, 1, '应识别出 1 个待同步的 SSH 运行');
+    assertEqual(d4.jobs, 2, '应回报账本里的作业数');
+    // 缺 projectId 时应 400（而不是 500/静默）
+    const r5 = await call('POST', '/api/dcs-cloud/v2/remotes/sync', {});
+    assertEqual(r5.res.status, 400, '缺 projectId 应 400');
+  } finally {
+    if (prevHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = prevHome;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------- 执行后端（本地/SSH）
+
+test('integration', 'tools/run-executor-params-wired', 'dcs_run_start/update 的 executor/job_ids/host 参数真实落盘（本地与 SSH 长任务可跟踪）', async () => {
+  // 本用例走**真实工具层**：注册工具 → 用工具入参创建项目/模块/运行 → 读回项目库。
+  // 价值：lifecycle 直接调 startRun，测不到「工具 schema 参数是否真的接到存储」。
+  const prevHome = process.env.DSH_HOME;
+  const home = mkdtempSync(join(tmpdir(), 'exec-tools-'));
+  process.env.DSH_HOME = home;
+  try {
+    const mod = await import(join(ROOT, 'lib', 'index.js'));
+    const { ctx, state } = makeHostCtx();
+    await mod.apply(ctx);
+    const tool = (n) => state.tools.find((t) => t.name === n);
+    // sessionId 由 exec.agent.session.header.id 提供（真实宿主契约，见 sessionIdOf）
+    const exec = { signal: undefined, workspace: process.cwd(), arguments: {}, agent: { session: { header: { id: 'exec-sess' } } } };
+
+    const tProj = tool('dcs_project_update');
+    const tMod = tool('dcs_module_update');
+    const tStart = tool('dcs_run_start');
+    const tUpd = tool('dcs_run_update');
+    assert(tProj && tMod && tStart && tUpd, '项目/模块/运行工具都应注册');
+
+    // ① 参数确实出现在 schema 里（防止只改 execute 忘了声明参数 → 模型看不见）
+    //    defineTool 已把简写规格转成 JSON Schema，故参数在 parameters.properties 下。
+    const startProps = (tStart.parameters || {}).properties || {};
+    const updProps = (tUpd.parameters || {}).properties || {};
+    assert(startProps.executor, 'dcs_run_start 应声明 executor');
+    assert(startProps.job_ids, 'dcs_run_start 应声明 job_ids');
+    assert(startProps.host, 'dcs_run_start 应声明 host');
+    assert(updProps.executor && updProps.job_ids && updProps.host,
+      'dcs_run_update 应声明 executor/job_ids/host');
+    assertEqual((startProps.executor.enum || []).join(','),
+      'dcs-offline,dcs-container,local,ssh,slurm,manual', 'executor 枚举应覆盖全部后端');
+    assertIncludes(startProps.executor.description, 'ssh', 'executor 描述应提示 ssh 取值');
+
+    // ② 真实调用：建项目 → 建模块 → 以 ssh 后端启动运行
+    const pr = await tProj.execute({ title: 'SSH 长任务', objective: '在远端跑比对' }, exec);
+    assertEqual(pr && pr.ok, true, `建项目失败: ${JSON.stringify(pr)}`);
+    const mr = await tMod.execute({ project_id: pr.project_id, name: '比对', desc: '在 c4g 上跑' }, exec);
+    const moduleId = mr.module ? mr.module.id : mr.module_id;
+    assert(moduleId, `建模块失败: ${JSON.stringify(mr)}`);
+
+    const sr = await tStart.execute({
+      project_id: pr.project_id, module_id: moduleId, executor: 'ssh',
+      job_ids: ['J01'], host: 'c4g-tun', notes: '对话方案：remote_run 提交比对',
+    }, exec);
+    assertEqual(sr && sr.ok, true, `启动运行失败: ${JSON.stringify(sr)}`);
+
+    // ③ 读回：后端/主机/作业号都应落盘
+    const projects = await import(join(ROOT, 'lib', 'projects.js'));
+    let run = projects.getProject(pr.project_id, 'exec-sess').modules[0].runs[0];
+    assertEqual(run.executor, 'ssh', 'executor 应落盘为 ssh');
+    assertEqual(run.host, 'c4g-tun', 'host 应落盘');
+    assertEqual((run.jobIds || []).join(','), 'J01', 'job_ids 应落盘为 jobIds');
+
+    // ④ 更新为 local + 后台 pid：模拟长任务换后端后仍能被跟踪
+    const ur = await tUpd.execute({
+      project_id: pr.project_id, module_id: moduleId, run_id: run.id,
+      status: 'running', progress: 30, executor: 'local', job_ids: ['4321'],
+      oaa: { observation: '远端不可达，改本机跑', assessment: '方案调整', action: '继续' },
+    }, exec);
+    assertEqual(ur && ur.ok, true, `更新运行失败: ${JSON.stringify(ur)}`);
+    run = projects.getProject(pr.project_id, 'exec-sess').modules[0].runs[0];
+    assertEqual(run.executor, 'local', 'executor 应更新为 local');
+    assertEqual((run.jobIds || []).join(','), '4321', 'job_ids 应更新为 4321');
+    assertEqual(run.progress, 30, '进度应落盘');
+  } finally {
+    if (prevHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = prevHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
